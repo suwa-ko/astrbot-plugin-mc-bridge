@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# AstrBot / plugin runtime data
+data/
+plugin_data/
+config.local.json
+observability.db
+observability.db-*
+task_metrics.jsonl
+task_journal.jsonl
+task_recovery.json
+short_history.json
+poi_memory.json
+screenshots/
+*.db
+*.db-shm
+*.db-wal
+
+# Local secrets
+.env
+.env.*
+*.secret
+*.token
+config.json
+
+# Logs
+logs/
+*.log
+gcm-diagnose.log
+
+# Local backups and temporary files
+backups/
+*.bak
+*.bak-*
+tmp_*
+temp/
+
+# Gradle / Minecraft run
+mod/.gradle/
+mod/build/
+mod/run/
+mod/logs/
+.gradle/
+build/
+out/
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+Thumbs.db
+.DS_Store
+
+# Local worktrees
+.worktrees/

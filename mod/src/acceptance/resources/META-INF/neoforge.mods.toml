@@ -1,0 +1,8 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="Private acceptance fixture"
+[[mods]]
+modId="mc_survival_fixture"
+version="0.0.1"
+displayName="Local survival acceptance fixture (temporary)"
+description="Opt-in local test world only; no multiplayer or remote control entry."

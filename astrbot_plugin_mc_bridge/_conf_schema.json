@@ -1,0 +1,189 @@
+{
+  "host": {
+    "description": "WebSocket 监听地址",
+    "type": "string",
+    "default": "0.0.0.0",
+    "hint": "容器内监听 0.0.0.0，宿主机通过 172.18.0.x 或反向代理访问。"
+  },
+  "port": {
+    "description": "WebSocket 端口",
+    "type": "int",
+    "default": 8766,
+    "hint": "8765 已被 GsCore 占用，这里用 8766。"
+  },
+  "path": {
+    "description": "WebSocket 路径",
+    "type": "string",
+    "default": "/ws"
+  },
+  "token": {
+    "description": "连接令牌",
+    "type": "string",
+    "default": "change-me",
+    "hint": "必须和客户端 Mod 配置里的 token 完全一致；建议改成随机长字符串。"
+  },
+  "vision_provider_id": {
+    "description": "看图使用的模型 Provider ID",
+    "type": "string",
+    "default": "your-provider/vision-model",
+    "hint": "需要支持图片输入；留空则 mc_see 不可用。"
+  },
+  "mc_provider_id": {
+    "description": "MC 指令 Agent 使用的模型 Provider ID",
+    "type": "string",
+    "default": "your-provider/chat-model",
+    "hint": "mc 前缀指令固定走这个模型，不经过 GPT 自动路由。"
+  },
+  "persona_id": {
+    "description": "MC Agent 使用的人格 ID",
+    "type": "string",
+    "default": "MinecraftBot",
+    "hint": "只取这个人格的 system prompt；找不到时用默认人格。"
+  },
+  "owner_name": {
+    "description": "默认跟随/看向的玩家名",
+    "type": "string",
+    "default": "Player",
+    "hint": "自然语言中说“跟着我 / 看着我”时默认使用这个玩家名。"
+  },
+  "game_allowed_players": {
+    "description": "允许下动作指令的游戏玩家（逗号分隔）",
+    "type": "string",
+    "default": "Player",
+    "hint": "不在名单里的玩家只能聊天、查状态、看画面。"
+  },
+  "game_safe_tools": {
+    "description": "其他玩家可用的安全工具",
+    "type": "string",
+    "default": "mc_status,mc_look,mc_see,mc_screenshot",
+    "hint": "工具执行层同样检查权限；不能通过配置把动作工具加入只读名单。"
+  },
+  "qq_admin_only": {
+    "description": "QQ 私聊只允许管理员控制",
+    "type": "bool",
+    "default": true
+  },
+  "max_screenshot_mb": {
+    "description": "截图最大体积（MB）",
+    "type": "int",
+    "default": 8
+  },
+  "reply_game_chat": {
+    "description": "是否在游戏内被点名时自动回复",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，只有聊天里出现 game_chat_names 中的名字才会回复。"
+  },
+  "game_chat_names": {
+    "description": "游戏内唤醒名字（逗号分隔）",
+    "type": "string",
+    "default": "MinecraftBot,Bot",
+    "hint": "游戏聊天中出现这些名字之一才回复。"
+  },
+  "self_name": {
+    "description": "机器人游戏内名字",
+    "type": "string",
+    "default": "MinecraftBot",
+    "hint": "用来忽略她自己发言的回声。"
+  },
+  "game_chat_cooldown": {
+    "description": "相同游戏消息去重间隔（秒）",
+    "type": "int",
+    "default": 3,
+    "hint": "只抑制同一玩家短时间重复发送的相同消息，不丢弃不同内容，也不硬等待。"
+  },
+  "task_default_logs": {
+    "description": "默认砍木头数量",
+    "type": "int",
+    "default": 64,
+    "hint": "用户没说数量时使用；一组=64。"
+  },
+  "task_max_seconds": {
+    "description": "采集任务最长运行时间（秒）",
+    "type": "int",
+    "default": 600
+  },
+  "task_progress_seconds": {
+    "description": "任务进度播报间隔（秒）",
+    "type": "int",
+    "default": 15
+  },
+  "task_log_blocks": {
+    "description": "要砍的原木方块列表",
+    "type": "string",
+    "default": "oak_log spruce_log birch_log jungle_log acacia_log dark_oak_log mangrove_log cherry_log",
+    "hint": "空格分隔，传给 Baritone 的 #mine 命令。"
+  },
+  "auto_survive": {
+    "description": "启用自动生存",
+    "type": "bool",
+    "default": true,
+    "hint": "附近有怪自动打，低血先撤，饿了自动吃。"
+  },
+  "auto_survive_interval": {
+    "description": "自动生存轮询间隔（秒）",
+    "type": "int",
+    "default": 2
+  },
+  "auto_flee_health": {
+    "description": "低于这个血量（0-20）自动撤离",
+    "type": "int",
+    "default": 8
+  },
+  "auto_eat_food": {
+    "description": "低于这个饱食度（0-20）自动吃东西",
+    "type": "int",
+    "default": 8
+  },
+  "auto_attack_range": {
+    "description": "自动迎战距离（格）",
+    "type": "int",
+    "default": 6
+  },
+  "screenshot_keep_count": {
+    "description": "截图最多保留张数",
+    "type": "int",
+    "default": 20
+  },
+  "shared_memory_enabled": {
+    "description": "主人QQ私聊与MC共享游戏记忆",
+    "type": "bool",
+    "default": true
+  },
+  "shared_memory_owner_qq": {
+    "description": "共享记忆所属主人QQ号",
+    "type": "string",
+    "default": "",
+    "hint": "必须明确填写；仅这个账号的私聊及owner_name对应游戏玩家可读。"
+  },
+  "shared_memory_owner_session": {
+    "description": "主人QQ私聊会话标识",
+    "type": "string",
+    "default": "",
+    "hint": "留空使用default:FriendMessage:主人QQ；不合并其他群或私聊。"
+  },
+  "autonomy_radius": {
+    "description": "自主探索活动半径（格）",
+    "type": "int",
+    "default": 24,
+    "hint": "开启时固定当前位置为起点；8到48格，不会随移动扩大。"
+  },
+  "autonomy_collect_seconds": {
+    "description": "单批自主采集时间上限（秒）",
+    "type": "int",
+    "default": 120,
+    "hint": "30到180秒，失败退避，停止或断线后不会自行续跑。"
+  },
+  "game_history_token_budget": {
+    "description": "MC日常历史独立预算（保守估算tokens）",
+    "type": "int",
+    "default": 1800,
+    "hint": "256到4096，仅保留最近完整问答对，仍最多10轮；不裁剪人格，实际计费以API统计为准。"
+  },
+  "game_chat_pending_limit": {
+    "description": "MC对话处理中与等待数量上限",
+    "type": "int",
+    "default": 4,
+    "hint": "1到8；忙碌时排队，不覆盖新内容；停止、断线后旧请求不恢复。"
+  }
+}

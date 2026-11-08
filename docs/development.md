@@ -61,8 +61,8 @@ cd mod
 4. 打 tag：
 
    ```bash
-   git tag v1.2.4
-   git push origin v1.2.4
+   git tag v1.2.5
+   git push origin v1.2.5
    ```
 
 5. CI 生成 release 资产：

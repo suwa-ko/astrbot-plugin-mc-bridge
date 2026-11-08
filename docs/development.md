@@ -30,7 +30,7 @@ $env:MC_PLUGIN_FILE = "$PWD\main.py"
 python -m unittest discover -s tests -v
 ```
 
-当前基线 312 项。
+当前基线 313 项。
 
 ## Mod 构建
 

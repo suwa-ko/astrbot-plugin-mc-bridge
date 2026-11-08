@@ -498,6 +498,37 @@ class BasicActionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(task.params, {"resource": "logs", "count": 4})
             self.assertIsNone(plugin._task_recovery.get("old-1"))
 
+    async def test_agent_resume_restores_group_dependencies_and_checkpoint(self):
+        plugin = make_plugin()
+        plugin._enqueue_tasks = Mock(return_value=True)
+        with tempfile.TemporaryDirectory() as folder:
+            store = recovery_mod.TaskRecovery(Path(folder) / "recovery.json")
+            store.merge([
+                {
+                    "recovery_id": "t1", "group_id": "g1", "opcode": "gather",
+                    "params": {"resource": "logs", "count": 8},
+                    "checkpoint": {"skill": "gather", "stage": "collecting", "completed": 3, "total": 8},
+                },
+                {
+                    "recovery_id": "t2", "group_id": "g1", "opcode": "craft",
+                    "params": {"item": "minecraft:stick", "count": 4},
+                    "dependencies": ["t1"],
+                },
+            ])
+            plugin._task_recovery = store
+            result = json.loads(await plugin.mc_task_start(
+                Event("mc恢复任务"), "resume", '{"task_id":"t1"}', 10
+            ))
+            self.assertTrue(result["accepted"])
+            self.assertEqual(result["resume_mode"], "checkpoint")
+            tasks = plugin._enqueue_tasks.call_args.args[0]
+            self.assertEqual(len(tasks), 2)
+            by_target = {task.target: task for task in tasks}
+            self.assertEqual(by_target["gather"].params["count"], 5)
+            self.assertEqual(by_target["craft"].dependencies, (by_target["gather"].task_id,))
+            self.assertEqual(result["tasks"], 2)
+            self.assertIsNone(store.get("t1"))
+
     async def test_agent_resume_uses_remaining_budget_and_marks_rerun(self):
         plugin = make_plugin()
         plugin._enqueue_tasks = Mock(return_value=True)

@@ -38,7 +38,7 @@ jobs:
 
       - name: Package plugin
         run: |
-          zip -r "astrbot_plugin_mc_bridge-${GITHUB_REF_NAME}.zip" astrbot_plugin_mc_bridge
+          zip -r "astrbot_plugin_mc_bridge-${GITHUB_REF_NAME}.zip" *.py metadata.yaml _conf_schema.json requirements.txt README.md LICENSE
           cp mod/build/libs/astrbot_bridge-*.jar .
           sha256sum "astrbot_plugin_mc_bridge-${GITHUB_REF_NAME}.zip" astrbot_bridge-*.jar > checksums.txt
           cat checksums.txt

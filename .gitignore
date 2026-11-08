@@ -32,7 +32,6 @@ config.json
 # Logs
 logs/
 *.log
-gcm-diagnose.log
 
 # Local backups and temporary files
 backups/

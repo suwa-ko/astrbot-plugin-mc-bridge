@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1
+
+- 插件文件移到仓库根目录，AstrBot 可直接从 Git 安装并解析插件市场元数据。
+- `metadata.yaml` 增加 `repo` 和 `tags`，版本更新为 1.1.1。
+- Release ZIP 改为只打包根目录的插件运行时文件，不再包含 `mod/`、`tests/` 和文档。
+- 同步 Mod `hello` 版本号为 0.7.0。
+
 ## 1.1.0
 
 - 新增批量容器搬运：`mc_container_transfer(items=...)` 一次搬多种物品，只打开/关闭容器一次。

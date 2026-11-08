@@ -20,4 +20,4 @@ jobs:
             -w /workspace \
             --entrypoint sh \
             soulter/astrbot:v4.29.4 \
-            -c 'python -m pip install -r astrbot_plugin_mc_bridge/requirements.txt && MC_PLUGIN_FILE=/workspace/astrbot_plugin_mc_bridge/main.py python -m unittest discover -s tests -v'
+            -c 'python -m pip install -r requirements.txt && MC_PLUGIN_FILE=/workspace/main.py python -m unittest discover -s tests -v'

@@ -13,6 +13,15 @@ L0 客户端原语 status / scan / navigate / mine_at / place_at / container / p
 - **调度器**：优先级、依赖、资源租约、执行预算、抢占、取消和持久化记录。
 - **Agent 层**：AstrBot LLM 选择工具和技能；工具过滤按只读/动作/生存组收敛。
 
+## 仓库布局
+
+- 仓库根目录：AstrBot 插件运行时代码、`metadata.yaml`、`_conf_schema.json`、`requirements.txt`。
+- `mod/`：NeoForge 客户端 Mod。
+- `tests/`：Python 回归。
+- `docs/`：公开文档。
+
+AstrBot 从 Git 安装和插件市场解析都要求仓库根目录存在 `metadata.yaml`，因此插件文件不能只放在子目录中。
+
 ## 任务生命周期
 
 ```text

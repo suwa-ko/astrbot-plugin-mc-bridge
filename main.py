@@ -2257,7 +2257,7 @@ class McBridgePlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def mc_short_commands(self, event: AstrMessageEvent):
-        """Private MC shortcuts and natural language, before GSCore and sleep."""
+        """Private MC shortcuts and natural language, before other handlers and sleep."""
         if not event.is_private_chat():
             return
         parsed = self._parse_input(str(event.message_str or ""))

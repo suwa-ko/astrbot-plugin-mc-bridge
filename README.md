@@ -2,7 +2,7 @@
 
 AstrBot 插件 + NeoForge 客户端 Mod，让 LLM Agent 通过真实 Minecraft 客户端执行生存任务：观察、移动、采集、合成、烧炼、容器搬运、战斗、睡觉和返回家床。
 
-> 项目由两部分组成，必须保持版本兼容：`astrbot_plugin_mc_bridge/`（AstrBot 插件）和 `mod/`（NeoForge Mod）。
+> 项目由两部分组成，必须保持版本兼容：仓库根目录的 AstrBot 插件和 `mod/` 下的 NeoForge Mod。根目录的 `main.py`、`metadata.yaml` 等文件就是插件本体。
 
 ## 功能
 
@@ -37,16 +37,18 @@ Minecraft NeoForge 客户端 + astrbot_bridge Mod
 - AstrBot `>=4.16,<5`，推荐 Python 3.12。
 - Minecraft Java Edition 1.21.1 + NeoForge 21.1.265。
 - Baritone standalone 1.11.3（NeoForge 版本）。
-- Python 依赖见 `astrbot_plugin_mc_bridge/requirements.txt`。
+- Python 依赖见根目录 `requirements.txt`。
 - Mod 构建需要 JDK 21。
 
 ## 安装插件
 
-1. 把 `astrbot_plugin_mc_bridge/` 整个目录放到 AstrBot 的 `data/plugins/` 下。
-2. 安装依赖：
+推荐使用 Release 中的 `astrbot_plugin_mc_bridge-<version>.zip`：
+
+1. 在 AstrBot WebUI 的插件页选择“从文件安装”，上传 ZIP；或把 ZIP 解压到 `data/plugins/astrbot_plugin_mc_bridge/`。
+2. 如果手动安装依赖：
 
    ```bash
-   pip install -r astrbot_plugin_mc_bridge/requirements.txt
+   pip install -r data/plugins/astrbot_plugin_mc_bridge/requirements.txt
    ```
 
 3. 重启 AstrBot，在插件配置中设置：
@@ -56,6 +58,8 @@ Minecraft NeoForge 客户端 + astrbot_bridge Mod
    - `owner_name` / `game_allowed_players`：主人游戏名；
    - `persona_id`：可选人格 ID。
 4. 可参考根目录的 `config.example.json`。示例默认监听 `127.0.0.1`；如果 AstrBot 在 Docker 或需要远程客户端连接，改成 `0.0.0.0` 并限制端口/配置反向代理。
+
+也可以直接从 Git 安装：本仓库根目录包含 `metadata.yaml` 和 `main.py`，AstrBot 会把整个仓库克隆到 `data/plugins/astrbot_plugin_mc_bridge/`。`mod/`、`tests/` 和 `docs/` 是开发文件，不影响插件加载。
 
 ## 安装 Mod
 
@@ -120,12 +124,16 @@ mc去坐标 -100 64 200
 
 协议细节见根目录 `protocol.md`。插件和 Mod 必须成对升级。
 
+## 插件市场
+
+仓库根目录已放置 `metadata.yaml` 和 `main.py`，AstrBot 可以直接从本仓库安装；AstrBot Cloud 发布页也会解析根目录的插件元数据。发布到市场时，插件包只包含根目录运行时文件，不包含 `mod/`、`tests/` 和文档。
+
 ## 开发与测试
 
 ```bash
 # Python 测试需要 AstrBot 运行时
-pip install "astrbot==4.29.4" -r astrbot_plugin_mc_bridge/requirements.txt
-MC_PLUGIN_FILE="$PWD/astrbot_plugin_mc_bridge/main.py" \
+pip install "astrbot==4.29.4" -r requirements.txt
+MC_PLUGIN_FILE="$PWD/main.py" \
   python -m unittest discover -s tests -v
 
 # Mod 构建与回归

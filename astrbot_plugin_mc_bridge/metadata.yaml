@@ -1,7 +1,0 @@
-name: astrbot_plugin_mc_bridge
-display_name: Minecraft 桥接
-short_desc: 让 AstrBot 通过本地 NeoForge 客户端控制 Minecraft 机器人
-desc: 通过 WebSocket 连接本地 NeoForge 客户端，提供状态、聊天、截图、Baritone 寻路/跟随等工具。
-version: 1.1.0
-author: suwa-ko
-astrbot_version: ">=4.16,<5"

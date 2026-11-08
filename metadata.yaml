@@ -1,0 +1,14 @@
+name: astrbot_plugin_mc_bridge
+display_name: Minecraft 桥接
+short_desc: 从 AstrBot 通过真实 NeoForge 客户端控制 Minecraft 生存任务
+desc: 通过 WebSocket 连接本地 NeoForge 客户端，提供状态、导航、截图、Baritone 寻路/建造，以及采集、合成、烧炼、搬运、农业、战斗、睡觉和返回家床等技能。
+version: 1.1.1
+author: suwa-ko
+repo: https://github.com/suwa-ko/astrbot-plugin-mc-bridge
+astrbot_version: ">=4.16,<5"
+tags:
+  - minecraft
+  - neoforge
+  - agent
+  - automation
+  - game

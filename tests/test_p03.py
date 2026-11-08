@@ -132,9 +132,9 @@ class BasicActionTests(unittest.IsolatedAsyncioTestCase):
             "pickup", {"item": "minecraft:rotten_flesh", "entity_uuid": "u1"}, seconds=5
         )
 
-    async def test_pickup_retries_with_excavation_when_blocked(self):
+    async def test_pickup_does_not_auto_excavate_when_blocked(self):
         plugin = plugin_with_new_actions()
-        plugin._approach_target = AsyncMock(side_effect=["blocked by stone", None])
+        plugin._approach_target = AsyncMock(return_value="blocked by stone")
         plugin._run_operation = AsyncMock(return_value={"phase": "completed", "success": True})
         plugin.bridge.call = AsyncMock(return_value={
             "entities": [
@@ -143,8 +143,24 @@ class BasicActionTests(unittest.IsolatedAsyncioTestCase):
             ]
         })
         result = await plugin.mc_pickup(Event("mc捡粗铁"), item="minecraft:raw_iron", count=1)
+        self.assertIn('"picked": 0', result)
+        self.assertIn("blocked by stone", result)
+        self.assertFalse(plugin._approach_target.await_args.kwargs.get("allow_break"))
+        plugin._run_operation.assert_not_awaited()
+
+    async def test_pickup_retries_with_excavation_when_allowed(self):
+        plugin = plugin_with_new_actions()
+        plugin._approach_target = AsyncMock(return_value=None)
+        plugin._run_operation = AsyncMock(return_value={"phase": "completed", "success": True})
+        plugin.bridge.call = AsyncMock(return_value={
+            "entities": [
+                {"uuid": "u1", "name": "粗铁", "distance": 4.0, "x": 1, "y": 2, "z": 3,
+                 "item": {"id": "minecraft:raw_iron", "name": "粗铁"}},
+            ]
+        })
+        result = await plugin.mc_pickup(Event("mc捡粗铁"), item="minecraft:raw_iron", count=1, allow_break=True)
         self.assertIn('"picked": 1', result)
-        self.assertTrue(plugin._approach_target.await_args_list[1].kwargs.get("allow_break"))
+        self.assertTrue(plugin._approach_target.await_args.kwargs.get("allow_break"))
 
     async def test_place_at_rejects_target_inside_player(self):
         plugin = plugin_with_new_actions()

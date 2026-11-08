@@ -186,15 +186,16 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
             "interact", {"operation": "open", "x": 3, "y": 64, "z": 4}, seconds=6
         )
 
-    async def test_goto_no_path_retries_once_with_break(self):
+    async def test_goto_no_path_never_auto_breaks(self):
         p = make_plugin()
-        p._move_and_wait = AsyncMock(side_effect=[
-            m.BridgeError("客户端确认当前路线无路，已停止，不再等到超时"),
-            None,
-        ])
-        await p._run_goto_task(m.QueuedTask("goto", "go", x=1, y=64, z=2))
-        self.assertEqual(p._move_and_wait.await_count, 2)
-        self.assertTrue(p._move_and_wait.await_args_list[1].kwargs.get("allow_break"))
+        p._try_open_nearby_door = AsyncMock(return_value=False)
+        p._goto_candidates = AsyncMock(return_value=[(1, 64, 2)])
+        p._move_and_wait = AsyncMock(side_effect=m.BridgeError("客户端确认当前路线无路，已停止，不再等到超时"))
+        with self.assertRaises(m.BridgeError):
+            await p._run_goto_task(m.QueuedTask("goto", "go", x=1, y=64, z=2))
+        self.assertEqual(p._move_and_wait.await_count, 1)
+        self.assertFalse(p._move_and_wait.await_args_list[0].kwargs.get("allow_break"))
+        self.assertTrue(any("不自动挖方块" in c.args[0] for c in p._task_chat.await_args_list))
 
     async def test_goto_falls_back_to_nearby_stand_and_reports_partial(self):
         p = make_plugin()
@@ -202,14 +203,13 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         p._goto_candidates = AsyncMock(return_value=[(1, 64, 2), (2, 64, 2)])
         p._move_and_wait = AsyncMock(side_effect=[
             m.BridgeError("客户端确认当前路线无路，已停止，不再等到超时"),
-            m.BridgeError("客户端确认当前路线无路，已停止，不再等到超时"),
             None,
         ])
         result = await p._run_goto_task(m.QueuedTask("goto", "go", x=1, y=64, z=2))
         self.assertEqual(result["goal_outcome"], "partial")
         self.assertEqual(result["arrived_near"], {"x": 2, "y": 64, "z": 2})
-        self.assertEqual(p._move_and_wait.await_count, 3)
-        self.assertFalse(p._move_and_wait.await_args_list[2].kwargs.get("allow_break"))
+        self.assertEqual(p._move_and_wait.await_count, 2)
+        self.assertFalse(p._move_and_wait.await_args_list[1].kwargs.get("allow_break"))
 
     async def test_goto_candidates_scans_below_unstandable_target(self):
         p = make_plugin()
@@ -226,11 +226,14 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
 
     async def test_goto_explicit_break_does_not_retry_forever(self):
         p = make_plugin()
+        p._try_open_nearby_door = AsyncMock(return_value=False)
+        p._goto_candidates = AsyncMock(return_value=[(1, 64, 2)])
         p._move_and_wait = AsyncMock(side_effect=m.BridgeError("客户端确认当前路线无路"))
         with self.assertRaises(m.BridgeError):
             await p._run_goto_task(m.QueuedTask("goto", "go", x=1, y=64, z=2,
                                                 params={"allow_break": True}))
         self.assertEqual(p._move_and_wait.await_count, 1)
+        self.assertTrue(p._move_and_wait.await_args_list[0].kwargs.get("allow_break"))
 
     def test_classify_goal_outcome_separates_execution_from_goal(self):
         self.assertEqual(m.classify_goal_outcome({"requested": 8, "collected": 1, "partial": True}), "partial")

@@ -347,18 +347,13 @@ class VanillaSkills:
                 continue
             try:
                 if _num(row.get("distance"), 99) > 2.2:
-                    error = await self.plugin._approach_target(row.get("x", x), row.get("y", y), row.get("z", z), seconds=8, reach=1.8)
-                    if error:
-                        error = await self.plugin._approach_target(row.get("x", x), row.get("y", y), row.get("z", z), seconds=20, reach=1.8, allow_break=True)
+                    error = await self.plugin._approach_target(row.get("x", x), row.get("y", y), row.get("z", z), seconds=20, reach=1.8)
                     if error:
                         continue
                 try:
                     await self._run("pickup", {"item": item_id, "entity_uuid": str(row.get("uuid") or "")}, seconds=4)
                 except Exception:
-                    error = await self.plugin._approach_target(row.get("x", x), row.get("y", y), row.get("z", z), seconds=20, reach=1.8, allow_break=True)
-                    if error:
-                        continue
-                    await self._run("pickup", {"item": item_id, "entity_uuid": str(row.get("uuid") or "")}, seconds=4)
+                    continue
             except Exception:
                 continue
 
@@ -859,9 +854,7 @@ class VanillaSkills:
             stands = [row for row in (table.get("stands") or []) if isinstance(row, dict)]
             if stands:
                 stand = min(stands, key=lambda row: _num(row.get("distance"), 999))
-                error = await self.plugin._approach_target(stand["x"], stand.get("feet_y", stand["y"]), stand["z"], seconds=10, reach=1.5)
-                if error:
-                    error = await self.plugin._approach_target(stand["x"], stand.get("feet_y", stand["y"]), stand["z"], seconds=20, reach=1.5, allow_break=True)
+                error = await self.plugin._approach_target(stand["x"], stand.get("feet_y", stand["y"]), stand["z"], seconds=20, reach=1.5)
                 if error:
                     continue
             opened = await self.plugin._call("container", {"operation": "open", "x": table["x"], "y": table["y"], "z": table["z"]}, timeout=10)

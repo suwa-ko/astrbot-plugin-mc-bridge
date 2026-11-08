@@ -1681,31 +1681,31 @@ class McBridgePlugin(Star):
         await self._task_chat(f"移动到 {item.x} {item.y} {item.z}")
         explicit = bool(item.params.get("allow_break"))
         target = (int(item.x), int(item.y), int(item.z))
-        last_error = None
+
+        def no_path(exc: BridgeError) -> bool:
+            return any(word in str(exc) for word in ("当前路线无路", "寻路无进展"))
+
         try:
             await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=explicit)
             await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
             return {"goal_outcome": "fulfilled", "target": target}
         except BridgeError as exc:
             last_error = exc
-            if explicit or not any(word in str(exc) for word in ("当前路线无路", "寻路无进展")):
+            if not no_path(exc):
                 raise
-        try:
-            if await self._try_open_nearby_door():
-                try:
-                    await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=False)
-                    await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
-                    return {"goal_outcome": "fulfilled", "target": target}
-                except BridgeError:
-                    await self._task_chat("开门后仍无路，尝试受控掘进")
-                    await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=True)
-            else:
-                await self._task_chat("普通寻路失败，尝试受控掘进")
-                await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=True)
-            await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
-            return {"goal_outcome": "fulfilled", "target": target}
-        except BridgeError as exc:
-            last_error = exc
+
+        if await self._try_open_nearby_door():
+            try:
+                await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=False)
+                await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
+                return {"goal_outcome": "fulfilled", "target": target}
+            except BridgeError as exc:
+                last_error = exc
+        if explicit:
+            await self._task_chat("受控掘进后仍无路，尝试附近可站立位置")
+        else:
+            await self._task_chat("普通寻路失败，尝试附近可站立位置，不自动挖方块")
+
         for candidate in await self._goto_candidates(*target):
             if candidate == target:
                 continue
@@ -2117,7 +2117,7 @@ class McBridgePlugin(Star):
             x(int): 目标方块或站位 X。
             y(int): 目标方块或站位 Y。
             z(int): 目标方块或站位 Z。
-            allow_break(bool): 本次移动允许掘进穿过方块，默认否。
+            allow_break(bool): 是否允许本次移动受控掘进穿过方块；默认否，普通移动不会自动挖方块。
         """
         target, info = await self._resolve_navigation_target(x, y, z)
         if target is None:
@@ -3828,16 +3828,19 @@ class McBridgePlugin(Star):
 
     @filter.llm_tool(name="mc_pickup")
     @require_mc_tool("mc_pickup")
-    async def mc_pickup(self, event: AstrMessageEvent, item: str = "", count: int = 1, radius: int = 8):
+    async def mc_pickup(self, event: AstrMessageEvent, item: str = "", count: int = 1, radius: int = 8,
+                        allow_break: bool = False):
         """拾取附近掉落物；可指定物品名/ID，留空拾取最近的掉落物。
 
         Args:
             item(string): 可选物品ID或显示名，例如 minecraft:rotten_flesh / 腐肉。
             count(int): 最多拾取几堆1-8。
             radius(int): 扫描半径1-16。
+            allow_break(bool): 只有显式允许时才挖开挡路方块靠近掉落物，默认否。
         """
         count = max(1, min(8, int(count)))
         radius = max(1, min(16, int(radius)))
+        allow_break = bool(allow_break)
         data = await self._call("scan_entities", {"radius": radius, "limit": 32}, timeout=10)
         err = self._err(data)
         if err:
@@ -3861,9 +3864,9 @@ class McBridgePlugin(Star):
                 continue
             try:
                 if float(row.get("distance", 99)) > 2.2:
-                    error = await self._approach_target(row["x"], row["y"], row["z"], seconds=8, reach=1.8)
-                    if error:
-                        error = await self._approach_target(row["x"], row["y"], row["z"], seconds=20, reach=1.8, allow_break=True)
+                    error = await self._approach_target(
+                        row["x"], row["y"], row["z"], seconds=20, reach=1.8, allow_break=allow_break
+                    )
                     if error:
                         errors.append({"item": identity, "error": error})
                         continue
@@ -3871,6 +3874,8 @@ class McBridgePlugin(Star):
                     result = await self._run_operation("pickup", {"item": identity, "entity_uuid": str(row.get("uuid") or "")}, seconds=5)
                 except SurvivalError as exc:
                     if "PICKUP_UNAVAILABLE" not in str(exc):
+                        raise
+                    if not allow_break:
                         raise
                     error = await self._approach_target(row["x"], row["y"], row["z"], seconds=20, reach=1.8, allow_break=True)
                     if error:

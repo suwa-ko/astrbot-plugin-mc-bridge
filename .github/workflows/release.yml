@@ -39,7 +39,8 @@ jobs:
       - name: Package plugin
         run: |
           zip -r "astrbot_plugin_mc_bridge-${GITHUB_REF_NAME}.zip" astrbot_plugin_mc_bridge
-          sha256sum "astrbot_plugin_mc_bridge-${GITHUB_REF_NAME}.zip" mod/build/libs/astrbot_bridge-*.jar > checksums.txt
+          cp mod/build/libs/astrbot_bridge-*.jar .
+          sha256sum "astrbot_plugin_mc_bridge-${GITHUB_REF_NAME}.zip" astrbot_bridge-*.jar > checksums.txt
           cat checksums.txt
 
       - name: Publish GitHub Release

@@ -1,14 +1,19 @@
 name: astrbot_plugin_mc_bridge
-display_name: Minecraft 桥接
-short_desc: 从 AstrBot 通过真实 NeoForge 客户端控制 Minecraft 生存任务
-desc: 通过 WebSocket 连接本地 NeoForge 客户端，提供状态、导航、截图、Baritone 寻路/建造，以及采集、合成、烧炼、搬运、农业、战斗、睡觉和返回家床等技能。
-version: 1.1.1
+display_name: Minecraft 生存助手
+short_desc: 让 AI 在真实的 Minecraft 世界里采集、建造、战斗和完成生存任务。
+desc: |
+  把自然语言指令变成真实的 Minecraft 行动。AI 会观察周围环境、使用当前背包里的物品，并在任务结束后按实际结果回复。
+
+  支持采集木材、矿石和作物，合成工具、烧炼材料、整理箱子，以及建造、耕种、战斗、睡觉、探索和回家。多步骤任务可以查看进度、取消，并在完成后主动通知；低血量、敌人靠近或目标不可达时会自动停下。
+
+  需要配合 NeoForge 客户端 Mod 使用，适用于单人世界和允许客户端操作的服务器。
+version: 1.1.2
 author: suwa-ko
 repo: https://github.com/suwa-ko/astrbot-plugin-mc-bridge
 astrbot_version: ">=4.16,<5"
 tags:
   - minecraft
-  - neoforge
+  - survival
   - agent
   - automation
   - game

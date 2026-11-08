@@ -164,6 +164,40 @@ class TaskCheckpointTests(unittest.TestCase):
             self.assertTrue(store.discard_group("g1"))
             self.assertIsNone(store.get("t1"))
 
+    def test_resume_refuses_changed_world_or_dimension(self):
+        row = {
+            "params": {"resource": "logs", "count": 8},
+            "checkpoint": {"skill": "gather", "stage": "collecting", "completed": 3, "total": 8},
+            "baseline": {"world_key": "world-a", "dimension": "minecraft:overworld"},
+        }
+        status = {"world_key": "world-b", "dimension": "minecraft:overworld", "inventory_items": []}
+        allowed, error, warning = checkpoint_mod.validate_resume(row, status)
+        self.assertFalse(allowed)
+        self.assertIn("世界", error)
+        status["world_key"] = "world-a"
+        status["dimension"] = "minecraft:the_nether"
+        allowed, error, _ = checkpoint_mod.validate_resume(row, status)
+        self.assertFalse(allowed)
+        self.assertIn("维度", error)
+        status["dimension"] = "minecraft:overworld"
+        allowed, error, warning = checkpoint_mod.validate_resume(row, status)
+        self.assertTrue(allowed)
+        self.assertEqual(error, "")
+        self.assertIn("背包", warning)
+
+    def test_resume_inventory_warning_for_craft(self):
+        row = {
+            "params": {"item": "minecraft:iron_pickaxe", "count": 1},
+            "checkpoint": {"skill": "craft", "completed": 1, "total": 1},
+            "baseline": {"world_key": "w", "dimension": "minecraft:overworld",
+                         "inventory": {"minecraft:iron_pickaxe": 0}},
+        }
+        status = {"world_key": "w", "dimension": "minecraft:overworld", "inventory_items": []}
+        allowed, error, warning = checkpoint_mod.validate_resume(row, status)
+        self.assertTrue(allowed)
+        self.assertEqual(error, "")
+        self.assertIn("iron_pickaxe", warning)
+
 
 if __name__ == "__main__":
     unittest.main()

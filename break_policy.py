@@ -209,20 +209,29 @@ class BreakPolicy:
         self._task_count = 0
         self._action_count = 0
 
-    def check(self, x: int, y: int, z: int, block_id: str = "", *,
-              count: int = 1, dimension: str = "", task_id: str = "") -> tuple[bool, str]:
-        count = max(1, int(count))
-        if task_id and task_id != self._task_id:
-            self.begin_task(task_id)
+    def preflight(self, x: int, y: int, z: int, block_id: str = "", *,
+                  dimension: str = "") -> tuple[bool, str]:
         protected = self.is_protected(x, y, z, dimension)
         if protected is not None:
             return False, f"目标在保护区域「{protected['name']}」内，已拒绝破坏"
         name = block_name(block_id)
+        if name in {"air", "cave_air", "void_air"}:
+            return True, ""
         if name and any(name == item or name.endswith("_" + item) for item in PROTECTED_BLOCKS):
             return False, f"{block_id} 是容器/功能方块，已拒绝破坏"
         category = block_category(block_id)
         if category is None and not self.allow_unnatural:
             return False, f"方块 {block_id or '未知'} 不在可破坏类别内"
+        return True, category or "unnatural"
+
+    def check(self, x: int, y: int, z: int, block_id: str = "", *,
+              count: int = 1, dimension: str = "", task_id: str = "") -> tuple[bool, str]:
+        count = max(1, int(count))
+        if task_id and task_id != self._task_id:
+            self.begin_task(task_id)
+        allowed, reason = self.preflight(x, y, z, block_id, dimension=dimension)
+        if not allowed:
+            return False, reason
         self._action_count = 0
         if count > self.per_action:
             return False, f"单次破坏预算不足：本次需要 {count}，上限 {self.per_action}"
@@ -230,7 +239,7 @@ class BreakPolicy:
             return False, f"任务破坏预算不足：已用 {self._task_count}，本次 {count}，上限 {self.per_task}"
         self._action_count = count
         self._task_count += count
-        return True, category or "unnatural"
+        return True, reason
 
     def snapshot(self) -> dict[str, Any]:
         return {

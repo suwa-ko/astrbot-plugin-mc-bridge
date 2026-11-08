@@ -124,6 +124,7 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 
 | 插件 | Mod | 协议 |
 |---|---|---|
+| 1.3.x | 0.7.x | 3 |
 | 1.2.x | 0.7.x | 3 |
 | 1.1.x | 0.7.x | 3 |
 | 1.0.x | 0.6.x | 3 |
@@ -159,7 +160,7 @@ cd mod
 ./gradlew assemble bridgeRegression navigationRegression survivalRegression
 ```
 
-当前基线：Python 318 项测试；Java survival / navigation / bridge 回归。
+当前基线：Python 324 项测试；Java survival / navigation / bridge 回归。
 
 ## 已知限制
 

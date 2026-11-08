@@ -7,7 +7,7 @@ from test_base import m, make_plugin
 class ToolProfileTests(unittest.TestCase):
     def test_simple_profile_removes_advanced_tools(self):
         plugin = make_plugin()
-        names = ["mc_brief", "mc_task_start", "mc_gather", "mc_protect", "mc_wait"]
+        names = ["mc_brief", "mc_task_start", "mc_gather", "mc_protect", "mc_wait", "mc_dig_down", "mc_set_respawn"]
         manager = SimpleNamespace(
             func_list=[SimpleNamespace(name=name) for name in names],
             remove_func=lambda name: manager.func_list.__setitem__(
@@ -18,7 +18,7 @@ class ToolProfileTests(unittest.TestCase):
         plugin.config["tool_profile"] = "simple"
         plugin._apply_tool_profile()
         remaining = {tool.name for tool in manager.func_list}
-        self.assertEqual(remaining, {"mc_brief", "mc_task_start", "mc_protect"})
+        self.assertEqual(remaining, {"mc_brief", "mc_task_start", "mc_protect", "mc_dig_down", "mc_set_respawn"})
 
     def test_full_profile_keeps_all_tools(self):
         plugin = make_plugin()

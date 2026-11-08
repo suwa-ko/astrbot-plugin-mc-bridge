@@ -55,7 +55,7 @@ from .task_metrics import TaskMetrics
 from .task_journal import TaskJournal
 from .intent import classify_task
 from .task_recovery import TaskRecovery
-from .task_checkpoint import baseline_from_status, clean_checkpoint, resume_plan
+from .task_checkpoint import baseline_from_status, clean_checkpoint, resume_plan, validate_resume
 from .break_policy import BreakPolicy
 from .short_history import ShortHistoryStore
 from .poi_memory import PoiMemory
@@ -797,6 +797,13 @@ class McBridgePlugin(Star):
                 if result is not True:
                     await trace.finish('unconfirmed');return False
                 await trace.delivered(stage='qq_api_ack')
+            elif route.channel=='session':
+                if not route.target:
+                    await trace.finish('invalid_route');return False
+                result=await self.context.send_message(route.target,MessageChain().message(text))
+                if result is not True:
+                    await trace.finish('unconfirmed');return False
+                await trace.delivered(stage='session_api_ack')
             elif route.channel=='minecraft':
                 if not self.bridge.connected or route.connection_id!=self.bridge.session_id:
                     await trace.finish('stale_or_disconnected');return False
@@ -978,6 +985,22 @@ class McBridgePlugin(Star):
         rows = recovery.group(group_id) if group_id else []
         if not rows:
             rows = [dict(entry)]
+        try:
+            current_status = await self._call("status", timeout=10)
+            status_error = self._err(current_status)
+        except Exception as exc:
+            current_status = {}
+            status_error = str(exc) or type(exc).__name__
+        if status_error:
+            return {"accepted": False, "error": "恢复前无法读取客户端状态：" + status_error,
+                    "resumed_from": group_id}
+        warnings = []
+        for row in rows:
+            allowed, blocking, warning = validate_resume(row, current_status)
+            if not allowed:
+                return {"accepted": False, "error": blocking, "resumed_from": group_id}
+            if warning:
+                warnings.append(warning)
         scheduler = self._scheduler_for()
         plans = []
         for row in rows:
@@ -1046,6 +1069,7 @@ class McBridgePlugin(Star):
                      "remaining_seconds": task.budget_seconds}
                     for task in tasks
                 ],
+                "warnings": warnings,
             }
         if not tasks:
             recovery.discard_group(group_id)
@@ -1060,6 +1084,7 @@ class McBridgePlugin(Star):
             "resumed_from": group_id,
             "resume_mode": "checkpoint" if any(plan.get("mode") == "checkpoint" for _, plan in plans) else "rerun",
             "note": "按阶段检查点恢复；未确认的阶段会重新执行",
+            "warnings": warnings,
             "tasks": len(tasks),
         }
 
@@ -1266,49 +1291,54 @@ class McBridgePlugin(Star):
             return None
         if action not in break_actions:
             return None
-        x = int(params.get("x", 0))
-        y = int(params.get("y", 0))
-        z = int(params.get("z", 0))
-        count = 1
-        if action in {"dig_down", "mine_below"}:
-            try:
-                count = max(1, min(8, int(params.get("depth", 3) or 3)))
-            except (TypeError, ValueError):
-                count = 3
-            try:
-                status = await self._call("status", timeout=8)
-                position = status.get("position") or {}
-                if action == "dig_down":
-                    x, y, z = int(position.get("x", 0)), int(position.get("y", 0)) - 1, int(position.get("z", 0))
-                else:
-                    x, y, z = int(position.get("x", 0)), int(position.get("y", 0)) - 1, int(position.get("z", 0))
-            except Exception:
-                pass
-        block_id = ""
-        try:
-            context = await self._call("block_context", {"x": x, "y": y, "z": z}, timeout=8)
-            block_id = str(context.get("block") or "")
-        except Exception:
-            block_id = ""
-        if not block_id:
-            return "无法确认目标方块类型，已拒绝破坏"
         status = {}
         try:
             status = await self._call("status", timeout=8)
         except Exception:
             pass
         dimension = str(status.get("dimension") or "")
+        x = int(params.get("x", 0))
+        y = int(params.get("y", 0))
+        z = int(params.get("z", 0))
+        count = 1
+        targets = [(x, y, z)]
+        if action in {"dig_down", "mine_below"}:
+            try:
+                count = max(1, min(8, int(params.get("depth", 3) or 3)))
+            except (TypeError, ValueError):
+                count = 3
+            position = status.get("position") or {}
+            x = int(position.get("x", 0))
+            y = int(position.get("y", 0)) - 1
+            z = int(position.get("z", 0))
+            targets = [(x, y - offset, z) for offset in range(count)]
+        policy = self._break_policy_for()
+        block_ids = []
+        for tx, ty, tz in targets:
+            block_id = ""
+            try:
+                context = await self._call("block_context", {"x": tx, "y": ty, "z": tz}, timeout=8)
+                block_id = str(context.get("block") or "")
+            except Exception:
+                block_id = ""
+            if not block_id:
+                return "无法确认目标方块类型，已拒绝破坏"
+            allowed, reason = policy.preflight(tx, ty, tz, block_id, dimension=dimension)
+            if not allowed:
+                return reason
+            block_ids.append(block_id)
         task_id = str(getattr(getattr(self, "_task_current", None), "task_id", "") or "direct")
-        ok, reason = self._break_policy_for().check(
-            x, y, z, block_id, count=count, dimension=dimension, task_id=task_id
+        ok, reason = policy.check(
+            targets[0][0], targets[0][1], targets[0][2], block_ids[0],
+            count=count, dimension=dimension, task_id=task_id,
         )
         if not ok:
             return reason
         return None
 
-    def _register_build_region(self, name: str, minimum, maximum) -> None:
+    def _register_build_region(self, name: str, minimum, maximum, dimension: str = "") -> None:
         try:
-            self._break_policy_for().add_box(name, minimum, maximum, kind="building")
+            self._break_policy_for().add_box(name, minimum, maximum, kind="building", dimension=dimension)
         except Exception:
             pass
 
@@ -1501,7 +1531,7 @@ class McBridgePlugin(Star):
                     item.goal_outcome = outcome
                     if item.kind == "skill":
                         label = {"fulfilled": "技能完成", "partial": "技能部分完成", "unmet": "技能未达成"}.get(outcome, "技能结束")
-                        await self._task_chat(f"{label}：{json.dumps(result, ensure_ascii=False, separators=(',', ':'))}")
+                        await self._task_chat(f"{label}（{getattr(item, 'task_id', '')}）：{json.dumps(result, ensure_ascii=False, separators=(',', ':'))}")
                     self._scheduler_for().finish(item, success=True, result=result, goal_outcome=outcome)
                     self._last_task_result = {
                         "task_id": str(getattr(item, "task_id", "") or ""),
@@ -1546,7 +1576,7 @@ class McBridgePlugin(Star):
                     self._scheduler_for().cancel_all("previous task failed; queue cancelled")
                     self._task_queue.clear()
                     await self._call("baritone", {"command": "stop"}, timeout=5)
-                    await self._task_chat(f"任务失败，后续队列已停止：{await self._task_error_text(exc)}")
+                    await self._task_chat(f"任务失败（{getattr(item, 'task_id', '')}），后续队列已停止：{await self._task_error_text(exc)}")
                     for destination in other_routes:
                         await self._task_chat('前一个任务未完成，你的排队任务已取消，请重新下达',route=destination,kind='cancel')
                     break
@@ -1900,15 +1930,20 @@ class McBridgePlugin(Star):
         owner_name = str(self.config.get("owner_name", "Player") or "Player")
         prompt = (
             f"\n\n你现在通过 Minecraft 客户端账号行动，默认主人游戏名是 {owner_name}。"
-            "常用入口："
-            "mc_brief 一次查看位置、血量、饥饿、背包摘要、家床和任务；"
-            "mc_task_start 提交技能任务（opcode 如 gather/craft/smelt/transfer/container_transfer/build/farm/sleep/combat/explore/return_to/resupply/trade_for，params_json 传JSON对象，例如 {\"opcode\":\"gather\",\"params_json\":\"{\\\"resource\\\":\\\"logs\\\",\\\"count\\\":8}\"}）；"
-            "mc_task_status 查看进度；mc_task_cancel 取消任务；mc_stop 紧急停止；"
-            "mc_inventory 查看背包；mc_recipes 查服务器配方；mc_memory 读写家床/工位/资源点；"
-            "mc_protect 管理建筑/容器保护区域；mc_goto 去已知坐标；mc_screenshot 只在确实需要看画面时使用。"
-            "任务提交后只回复“已提交/已开始”并结束本轮；完成或失败会主动通知，不要连续轮询 mc_task_status。"
-            "实际结果以工具返回为准，加入队列不等于完成；低血、敌人靠近或目标不可达时会停止。"
-            "不要编造没有工具确认的结果。"
+            "常用入口：mc_brief 一次查看位置、血量、饥饿、背包摘要、家床和任务；mc_inventory 查看完整背包；"
+            "mc_goto/mc_come/mc_follow/mc_stop 控制移动；mc_mine_at/mc_dig_down/mc_place_at 挖掘或放置；"
+            "mc_pickup 拾取掉落物；mc_container 打开/读取/点击容器；mc_interact 开关门和按钮；"
+            "mc_eat 进食、mc_equip 换装备、mc_attack 攻击、mc_block_context 查看方块和站位；"
+            "mc_scan 扫描附近方块/实体；mc_set_respawn 设置重生床；mc_recipes 查配方；"
+            "mc_memory 读写家床/工位/资源点；mc_protect 管理保护区域；mc_screenshot 只在确实需要看画面时使用。"
+            "多步骤任务用 mc_task_start：opcode 支持 gather(resource,count)、craft(item,count)、smelt(item,count)、"
+            "container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、"
+            "farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、"
+            "explore(goal,max_seconds,max_distance)、return_to(target_pos)、resupply(...)、trade_for(item,count,radius)；"
+            "params_json 传 JSON 对象，不确定时先用 dry_run=true 预览。"
+            "mc_task_status 查看进度、mc_task_cancel 取消任务。"
+            "任务提交后只回复“已提交/已开始”并结束本轮；完成或失败会主动通知，不要连续轮询。"
+            "实际结果以工具返回为准，加入队列不等于完成；低血、敌人靠近或目标不可达时会停止；不要编造没有工具确认的结果。"
         )
         if not allow_actions:
             prompt += "\n本轮只能聊天或查看，不执行新的游戏动作。" if owner else "\n当前说话的人不是主人，只能聊天和查看；动作需要主人下令。"
@@ -4310,7 +4345,7 @@ class McBridgePlugin(Star):
         """启动一个 L1/L2 技能任务，返回 task_id；参数用 JSON 对象传入。
 
         Args:
-            opcode(string): gather、mine_ore、craft、craft_item、smelt、smelt_item、transfer、container_transfer、build、farm、sleep、combat、explore、resupply、trade_for、return_to、return_home；auto 表示按文本分类；resume 表示恢复检查点任务。
+            opcode(string): gather(resource,count)、craft(item,count)、smelt(item,count)、container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、explore(goal,max_seconds,max_distance)、return_to(target_pos)、resupply(...)、trade_for(item,count,radius)；auto 表示按文本分类；resume 表示恢复检查点任务。
             params_json(string): 技能参数JSON；auto 模式用 {"text":"砍8个木头"}。
             priority(int): 0紧急、10主人、20普通、30自主、40后台。
             dry_run(bool): 只校验并返回资源/时限预览，不加入队列。

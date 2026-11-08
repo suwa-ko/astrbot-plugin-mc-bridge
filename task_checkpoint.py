@@ -71,6 +71,66 @@ def inventory_counts(status: dict[str, Any] | None) -> dict[str, int]:
     return counts
 
 
+STONE_IDS = {"minecraft:stone", "minecraft:cobblestone", "minecraft:deepslate", "minecraft:cobbled_deepslate"}
+IRON_IDS = {"minecraft:raw_iron", "minecraft:iron_ore", "minecraft:deepslate_iron_ore"}
+
+
+def resource_count(counts: dict[str, int], resource: str) -> int:
+    resource = str(resource or "logs").lower()
+    if resource == "logs":
+        return sum(count for item, count in counts.items() if item.endswith("_log"))
+    if resource == "stone":
+        return sum(count for item, count in counts.items() if item in STONE_IDS)
+    if resource == "iron":
+        return sum(count for item, count in counts.items() if item in IRON_IDS)
+    if resource == "coal":
+        return counts.get("minecraft:coal", 0)
+    if resource == "wheat":
+        return counts.get("minecraft:wheat", 0)
+    return counts.get(resource, 0)
+
+
+def validate_resume(row: dict[str, Any], status: dict[str, Any] | None) -> tuple[bool, str, str]:
+    """Check world and inventory evidence before a checkpoint resume.
+
+    Returns (allowed, blocking_error, warning).  A changed world is refused;
+    an inventory mismatch is only a warning because items may have been moved
+    to a chest or intentionally consumed after the checkpoint.
+    """
+    if not isinstance(row, dict) or not isinstance(status, dict):
+        return True, "", ""
+    baseline = clean_baseline(row.get("baseline"))
+    if not baseline:
+        return True, "", ""
+    current_world = str(status.get("world_key") or "")
+    current_dimension = str(status.get("dimension") or "")
+    if baseline.get("world_key") and current_world and baseline["world_key"] != current_world:
+        return False, "检查点所属世界已经变化，已拒绝自动续作", ""
+    if baseline.get("dimension") and current_dimension and baseline["dimension"] != current_dimension:
+        return False, "检查点所属维度已经变化，已拒绝自动续作", ""
+    checkpoint = clean_checkpoint(row.get("checkpoint"))
+    completed = max(0, int(checkpoint.get("completed", 0) or 0))
+    if not completed:
+        return True, "", ""
+    params = row.get("params") if isinstance(row.get("params"), dict) else {}
+    counts = inventory_counts(status)
+    baseline_inventory = baseline.get("inventory") if isinstance(baseline.get("inventory"), dict) else {}
+    warning = ""
+    skill = str(checkpoint.get("skill") or "")
+    if skill in {"craft", "smelt"}:
+        item = str(params.get("item") or "")
+        if item:
+            expected = max(0, _to_int(baseline_inventory.get(item), 0) + completed)
+            if counts.get(item, 0) < expected:
+                warning = f"背包中 {item} 少于检查点预期（{counts.get(item, 0)}/{expected}），将按当前背包继续"
+    elif skill == "gather":
+        resource = str(params.get("resource") or "logs")
+        expected = max(0, resource_count(baseline_inventory, resource) + completed)
+        if resource_count(counts, resource) < expected:
+            warning = f"背包中 {resource} 少于检查点预期，将按当前背包继续"
+    return True, "", warning
+
+
 def baseline_from_status(status: dict[str, Any] | None) -> dict[str, Any]:
     """Capture the small baseline needed to compare a resumed task."""
     if not isinstance(status, dict):

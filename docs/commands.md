@@ -73,4 +73,4 @@ mc_use_item / mc_interact / mc_equip
 
 具体参数以 AstrBot 工具列表为准。普通移动默认不开启破坏；被挡住时先尝试开门，仍无路才使用一次受控掘进。
 
-默认 `tool_profile=simple` 只暴露常用入口（`mc_brief`、`mc_task_start`、`mc_task_status`、`mc_task_cancel`、`mc_stop`、`mc_inventory`、`mc_recipes`、`mc_memory`、`mc_protect`、`mc_goto`、`mc_screenshot`）。需要坐标微操或调试时，可改为 `full` 暴露全部工具。
+默认 `tool_profile=simple` 暴露常用入口：状态、背包、方块上下文、扫描、移动/跟随/过来、挖掘/向下挖/放置/拾取、容器/交互、进食/装备/攻击、设置重生点、任务、配方、记忆、保护和截图。需要全部低层工具或调试时，可改为 `full`。

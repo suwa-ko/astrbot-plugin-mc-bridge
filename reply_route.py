@@ -33,6 +33,10 @@ def event_route(event,bridge):
             sender=str(event.get_sender_id())
             if len(parts)==3 and parts[0] and parts[1]=='FriendMessage' and parts[2]==sender and sender.isdigit():
                 return ReplyRoute('qq',target=target)
+        elif platform=='webchat' and event.is_private_chat():
+            target=str(event.unified_msg_origin)
+            if target:
+                return ReplyRoute('session',target=target)
     except (AttributeError,TypeError,ValueError):
         pass
     return None

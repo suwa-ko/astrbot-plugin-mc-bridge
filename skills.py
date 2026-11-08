@@ -1291,37 +1291,44 @@ class VanillaSkills:
                         positions.append((int(x) + dx * i - dz * side, int(y) + j, int(z) + dz * i + dx * side))
         positions = list(dict.fromkeys(positions))
         total_positions = len(positions)
-        all_positions = list(positions)
         positions = [position for position in positions if position not in skip]
         if len(positions) > 64:
             raise SkillError("单次建造最多64格")
         if await self._count(material) < len(positions):
             raise SkillError(f"材料不足：需要 {len(positions)} 个 {material}")
+        dimension = ""
+        try:
+            dimension = str((await self.status()).get("dimension") or "")
+        except Exception:
+            pass
         placed, errors = 0, []
         placed_positions = [list(position) for position in skip]
-        for px, py, pz in positions:
-            try:
-                await self._run("place_at", {"x": px, "y": py, "z": pz, "item": material}, seconds=8)
-                placed += 1
-                placed_positions.append([px, py, pz])
-                self._mark("build", "building", len(placed_positions), total_positions,
-                           {"positions": placed_positions[-64:]})
-            except Exception as exc:
-                errors.append({"x": px, "y": py, "z": pz, "error": str(exc)})
-                if len(errors) >= 4:
-                    break
-        if all_positions:
-            xs = [position[0] for position in all_positions]
-            ys = [position[1] for position in all_positions]
-            zs = [position[2] for position in all_positions]
-            try:
-                self.plugin._register_build_region(
-                    f"build-{pattern}-{min(xs)}-{min(ys)}-{min(zs)}",
-                    (min(xs), min(ys), min(zs)),
-                    (max(xs), max(ys), max(zs)),
-                )
-            except Exception:
-                pass
+        try:
+            for px, py, pz in positions:
+                try:
+                    await self._run("place_at", {"x": px, "y": py, "z": pz, "item": material}, seconds=8)
+                    placed += 1
+                    placed_positions.append([px, py, pz])
+                    self._mark("build", "building", len(placed_positions), total_positions,
+                               {"positions": placed_positions[-64:]})
+                except Exception as exc:
+                    errors.append({"x": px, "y": py, "z": pz, "error": str(exc)})
+                    if len(errors) >= 4:
+                        break
+        finally:
+            if placed_positions:
+                xs = [position[0] for position in placed_positions]
+                ys = [position[1] for position in placed_positions]
+                zs = [position[2] for position in placed_positions]
+                try:
+                    self.plugin._register_build_region(
+                        f"build-{pattern}-{min(xs)}-{min(ys)}-{min(zs)}",
+                        (min(xs), min(ys), min(zs)),
+                        (max(xs), max(ys), max(zs)),
+                        dimension=dimension,
+                    )
+                except Exception:
+                    pass
         return {"skill": "build", "pattern": pattern, "material": material,
                 "requested": total_positions, "already_placed": len(skip),
                 "placed": placed, "errors": errors}

@@ -46,11 +46,23 @@ class RouteValidation(unittest.TestCase):
         event.set_extra('_mc_connection_id','session');event.set_extra('_mc_trusted_player','Player');event.set_extra('_mc_sender_uuid','00000000-0000-0000-0000-000000000001')
         self.assertEqual(routes.event_route(event,bridge),MC)
         bridge.session_id='new';self.assertIsNone(routes.event_route(event,bridge))
+    def test_webchat_private_session_has_a_notice_route(self):
+        event=Event(platform='webchat');event.unified_msg_origin='webchat:owner-session'
+        self.assertEqual(routes.event_route(event,SimpleNamespace()),routes.ReplyRoute('session',target='webchat:owner-session'))
+        event.private=False
+        self.assertIsNone(routes.event_route(event,SimpleNamespace()))
 
 class NoticeDelivery(unittest.IsolatedAsyncioTestCase):
     async def test_qq_notification_never_calls_mc_chat(self):
         p=plugin();self.assertTrue(await p._task_chat('任务完成：一把木镐',route=QQ))
         self.assertEqual(qq_texts(p),[(QQ.target,'任务完成：一把木镐')]);self.assertEqual(game_texts(p),[])
+    async def test_session_notification_uses_the_original_session(self):
+        p=plugin();session=routes.ReplyRoute('session',target='webchat:owner-session')
+        self.assertTrue(await p._task_chat('任务完成：一把木镐',route=session))
+        self.assertEqual(qq_texts(p),[(session.target,'任务完成：一把木镐')]);self.assertEqual(game_texts(p),[])
+    async def test_session_notification_without_target_is_silent(self):
+        p=plugin();self.assertFalse(await p._task_chat('任务完成',route=routes.ReplyRoute('session',target='')))
+        p.context.send_message.assert_not_awaited();p.bridge.call.assert_not_awaited()
     async def test_game_notification_never_calls_qq(self):
         p=plugin();self.assertTrue(await p._task_chat('任务完成：原木新增1',route=MC))
         self.assertEqual(game_texts(p),['任务完成：原木新增1']);p.context.send_message.assert_not_awaited()

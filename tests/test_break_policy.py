@@ -24,6 +24,15 @@ class BreakPolicyTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("容器", reason)
 
+    def test_preflight_checks_without_consuming_budget(self):
+        with tempfile.TemporaryDirectory() as folder:
+            policy = break_mod.BreakPolicy(Path(folder) / "regions.json", per_action=1, per_task=1)
+            policy.add_box("home", (0, 60, 0), (3, 70, 3))
+            self.assertFalse(policy.preflight(1, 64, 1, "minecraft:stone")[0])
+            self.assertFalse(policy.preflight(9, 64, 9, "minecraft:chest")[0])
+            self.assertTrue(policy.preflight(9, 64, 9, "minecraft:stone")[0])
+            self.assertEqual(policy.snapshot()["task_used"], 0)
+
     def test_unnatural_block_requires_opt_in(self):
         with tempfile.TemporaryDirectory() as folder:
             policy = break_mod.BreakPolicy(Path(folder) / "regions.json")

@@ -4,8 +4,10 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.function.LongSupplier;
@@ -92,6 +94,9 @@ final class SurvivalActions {
     private java.net.http.WebSocket navigationConnection;
     private long navigationGeneration,navigationStillSince;
     private Vec3 navigationLastPosition;
+    private boolean breakBudgetActive, breakBudgetExhausted;
+    private int breakBudgetCount, breakBudgetLimit;
+    private Map<BlockPos, Boolean> breakBudgetSnapshot = new HashMap<>();
     private static final Set<String> STONES = Set.of("minecraft:stone","minecraft:deepslate");
     private static final Set<String> COAL = Set.of("minecraft:coal_ore","minecraft:deepslate_coal_ore");
     private static final Set<String> IRON = Set.of("minecraft:iron_ore","minecraft:deepslate_iron_ore");
@@ -125,6 +130,7 @@ final class SurvivalActions {
     boolean busy() { return job!=null; }
     void cancel(String reason) {
         navigationTarget=null;
+        resetBreakBudget();
         pathFeedback.end();
         Minecraft mc=Minecraft.getInstance();
         if(mc.gameMode!=null) mc.gameMode.stopDestroyBlock();
@@ -135,8 +141,56 @@ final class SurvivalActions {
         navigation.restore();
     }
     void prepareNavigation() throws ReflectiveOperationException {navigation.begin();}
-    JsonObject navigationState(){return navigation.state();}
+    JsonObject navigationState(){
+        JsonObject result=navigation.state();
+        result.addProperty("break_monitoring",breakBudgetActive);
+        result.addProperty("break_count",breakBudgetCount);
+        result.addProperty("break_limit",breakBudgetLimit);
+        result.addProperty("break_budget_exhausted",breakBudgetExhausted);
+        return result;
+    }
     JsonObject pathState(){return pathFeedback.state();}
+    private void beginBreakBudget(int limit) {
+        breakBudgetLimit=Math.max(1,Math.min(64,limit));
+        breakBudgetCount=0;
+        breakBudgetExhausted=false;
+        breakBudgetActive=true;
+        breakBudgetSnapshot=new HashMap<>();
+    }
+    private void resetBreakBudget() {
+        breakBudgetActive=false;
+        breakBudgetExhausted=false;
+        breakBudgetCount=0;
+        breakBudgetLimit=0;
+        breakBudgetSnapshot=new HashMap<>();
+    }
+    static int breakTransition(Map<BlockPos,Boolean> snapshot,BlockPos pos,boolean solid) {
+        Boolean was=snapshot.put(pos,solid);
+        return was!=null&&was&&!solid?1:0;
+    }
+    private void tickBreakBudget() {
+        if(!breakBudgetActive)return;
+        Minecraft mc=Minecraft.getInstance();LocalPlayer player=mc.player;
+        if(player==null||player.level()!=navigationWorld||navigationTarget==null||player.isDeadOrDying()){resetBreakBudget();return;}
+        BlockPos center=player.blockPosition();
+        Map<BlockPos,Boolean> next=new HashMap<>(640);
+        int count=breakBudgetCount;
+        for(int dx=-4;dx<=4;dx++)for(int dy=-2;dy<=2;dy++)for(int dz=-4;dz<=4;dz++) {
+            BlockPos pos=center.offset(dx,dy,dz);
+            boolean solid=!player.level().getBlockState(pos).isAir();
+            count+=breakTransition(breakBudgetSnapshot,pos,solid);
+            next.put(pos,solid);
+        }
+        breakBudgetSnapshot=next;breakBudgetCount=count;
+        if(count>=breakBudgetLimit) {
+            breakBudgetExhausted=true;breakBudgetActive=false;navigationTarget=null;
+            pathFeedback.end();
+            try{navigation.restore();}catch(ReflectiveOperationException ignored){}
+            if(mc.gameMode!=null)mc.gameMode.stopDestroyBlock();
+            if(player.connection!=null)player.connection.sendChat("#stop");
+            AstrBotBridge.LOGGER.info("[astrbot-bridge] navigation break budget exhausted after {} blocks",count);
+        }
+    }
     void observeNavigation(BlockPos target){
         observeNavigation(target,false);
     }
@@ -241,10 +295,12 @@ final class SurvivalActions {
                 if(!SurvivalRules.within(target.getX(),target.getY(),target.getZ(),player.getX(),player.getY(),player.getZ(),32))
                     throw new IllegalArgumentException("safe navigation is limited to 32 blocks, 12 vertically");
                 boolean allowBreak=p.has("allow_break")&&p.get("allow_break").getAsBoolean();
+                int maxBreak=allowBreak?Math.max(1,Math.min(64,integer(p,"max_break",8))):0;
                 navigation.begin(allowBreak);
                 observeNavigation(target,true);
+                if(allowBreak)beginBreakBudget(maxBreak);else resetBreakBudget();
                 player.connection.sendChat("#goto "+target.getX()+" "+target.getY()+" "+target.getZ());
-                JsonObject result=new JsonObject();result.addProperty("phase","accepted");result.addProperty("allow_break",allowBreak);reply.send(id,true,null,result);return;
+                JsonObject result=new JsonObject();result.addProperty("phase","accepted");result.addProperty("allow_break",allowBreak);result.addProperty("max_break",maxBreak);reply.send(id,true,null,result);return;
             }
             Job j=new Job();j.id=id;j.kind=action;j.generation=generation.getAsLong();j.origin=connection.get();j.world=player.level();j.deadline=j.started+26000;
             switch(action) {
@@ -279,7 +335,10 @@ final class SurvivalActions {
 
     void tick() {
         try{navigation.enforce();}catch(ReflectiveOperationException ex){cancel("navigation protection unavailable");return;}
-        if(job==null)try{finishNavigationTick();}catch(RuntimeException unavailable){navigationTarget=null;}
+        if(job==null) {
+            try{finishNavigationTick();}catch(RuntimeException unavailable){navigationTarget=null;}
+            tickBreakBudget();
+        }
         if(job==null) return;
         Minecraft mc=Minecraft.getInstance();Job j=job;long now=System.currentTimeMillis();
         if(mc.player==null || j.origin!=connection.get() || j.generation!=generation.getAsLong()) {cancel("action cancelled by stop/disconnect");return;}

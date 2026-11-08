@@ -405,6 +405,84 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(m.BridgeError, "超时"):
                 await p._wait_arrival(1, 2, 3, 10)
 
+    async def test_move_and_wait_passes_remaining_navigation_break_budget(self):
+        p = make_plugin()
+        p.bridge.client_info = {"protocol": 3, "capabilities": "navigation_break_budget"}
+        p._break_policy = SimpleNamespace(
+            per_action=8, remaining_task_budget=lambda: 5, ensure_task=Mock(),
+            record_navigation_breaks=Mock())
+        p._wait_arrival = AsyncMock(return_value=None)
+        await p._move_and_wait(1, 2, 3, 10, allow_break=True)
+        nav = [call for call in p.bridge.call.await_args_list if call.args[0] == "navigate"][0]
+        self.assertTrue(nav.args[1]["allow_break"])
+        self.assertEqual(nav.args[1]["max_break"], 5)
+        self.assertTrue(p._wait_arrival.await_args.kwargs.get("allow_break"))
+
+    async def test_move_and_wait_rejects_exhausted_navigation_budget(self):
+        p = make_plugin()
+        p.bridge.client_info = {"protocol": 3}
+        p._break_policy = SimpleNamespace(
+            per_action=8, remaining_task_budget=lambda: 0, ensure_task=Mock(),
+            record_navigation_breaks=Mock())
+        with self.assertRaisesRegex(m.BridgeError, "任务破坏预算"):
+            await p._move_and_wait(1, 2, 3, 10, allow_break=True)
+        p.bridge.call.assert_not_awaited()
+
+    async def test_wait_arrival_stops_on_client_break_budget_exhausted(self):
+        p = make_plugin()
+        policy = SimpleNamespace(record_navigation_breaks=Mock())
+        p._break_policy = policy
+        status = {
+            "position": {"x": 0, "y": 64, "z": 0},
+            "client_tps": 20, "client_paused": False, "screen": "none",
+            "navigation_protection": {"break_count": 3, "break_budget_exhausted": True},
+        }
+        async def call(action, params=None, timeout=20):
+            return status if action == "status" else {}
+        p.bridge.call.side_effect = call
+        with self.assertRaisesRegex(m.BridgeError, "客户端侧破坏预算"):
+            await p._wait_arrival(10, 64, 0, 5, allow_break=True)
+        policy.record_navigation_breaks.assert_called_once_with(3)
+
+    async def test_wait_arrival_records_navigation_break_spend(self):
+        p = make_plugin()
+        policy = SimpleNamespace(record_navigation_breaks=Mock())
+        p._break_policy = policy
+        status = {
+            "position": {"x": 10, "y": 64, "z": 0},
+            "client_tps": 20, "client_paused": False, "screen": "none",
+            "navigation_protection": {"break_count": 4},
+        }
+        async def call(action, params=None, timeout=20):
+            return status if action == "status" else {}
+        p.bridge.call.side_effect = call
+        await p._wait_arrival(10, 64, 0, 5, allow_break=True)
+        policy.record_navigation_breaks.assert_called_once_with(4)
+
+    async def test_approach_target_passes_and_records_navigation_break_budget(self):
+        p = make_plugin()
+        p.bridge.client_info = {"protocol": 3}
+        policy = SimpleNamespace(
+            per_action=8, remaining_task_budget=lambda: 6, ensure_task=Mock(),
+            record_navigation_breaks=Mock())
+        p._break_policy = policy
+        status = {
+            "position": {"x": 0.5, "y": 64.5, "z": 0.5},
+            "navigation_protection": {"break_count": 2},
+        }
+        async def call(action, params=None, timeout=20):
+            if action == "navigate":
+                return {"phase": "accepted"}
+            if action == "status":
+                return status
+            return {}
+        p.bridge.call.side_effect = call
+        result = await p._approach_target(0, 64, 0, seconds=5, reach=1.5, allow_break=True)
+        self.assertIsNone(result)
+        nav = [call for call in p.bridge.call.await_args_list if call.args[0] == "navigate"][0]
+        self.assertEqual(nav.args[1]["max_break"], 6)
+        policy.record_navigation_breaks.assert_called_once_with(2)
+
     async def test_real_position_confirms_arrival(self):
         p = make_plugin()
         p.bridge.call.side_effect = [{}, {"position": {"x": 1, "y": 64, "z": 2}}, {}]

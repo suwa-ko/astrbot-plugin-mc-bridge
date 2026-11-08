@@ -241,6 +241,20 @@ class BreakPolicy:
         self._task_count += count
         return True, reason
 
+    def ensure_task(self, task_id: str) -> None:
+        if str(task_id or "direct") != self._task_id:
+            self.begin_task(task_id)
+
+    def remaining_task_budget(self) -> int:
+        return max(0, self.per_task - self._task_count)
+
+    def record_navigation_breaks(self, count: int) -> None:
+        try:
+            count = max(0, int(count))
+        except (TypeError, ValueError):
+            return
+        self._task_count = min(self.per_task, self._task_count + count)
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "regions": self.list(),

@@ -1281,9 +1281,8 @@ class McBridgePlugin(Star):
                 if policy.intersects(low, high, dimension):
                     params["allow_break"] = False
                     return None
-                task_id = str(getattr(getattr(self, "_task_current", None), "task_id", "") or "direct")
-                allowed, _ = policy.check(target[0], target[1], target[2], "minecraft:stone",
-                                          count=1, dimension=dimension, task_id=task_id)
+                allowed, _ = policy.preflight(target[0], target[1], target[2], "minecraft:stone",
+                                              dimension=dimension)
                 if not allowed:
                     params["allow_break"] = False
             except Exception:
@@ -2942,8 +2941,8 @@ class McBridgePlugin(Star):
             for destination in affected:
                 await self._task_chat('Minecraft连接已断开，你发起的任务已中断；重连后不会自动续跑',route=destination,kind='disconnect')
 
-    async def _wait_arrival(self, x, y, z, seconds, tolerance=1.8, expected_scope=None, allow_ladder_assist=False):
-        progress_at=time.monotonic();deadline=progress_at+seconds;progress_position=None;ladder_assist_tried=False
+    async def _wait_arrival(self, x, y, z, seconds, tolerance=1.8, expected_scope=None, allow_ladder_assist=False, allow_break=False):
+        progress_at=time.monotonic();deadline=progress_at+seconds;progress_position=None;ladder_assist_tried=False;last_status=None
         try:
             while time.monotonic() < deadline:
                 if self._task_stop.is_set():
@@ -2951,6 +2950,7 @@ class McBridgePlugin(Star):
                 status = await self._call("status", timeout=10)
                 if self._err(status):
                     raise BridgeError("位置查询失败：" + self._err(status))
+                last_status = status
                 if expected_scope and any(status.get(key) != expected_scope.get(key) for key in ("world_key", "dimension")):
                     raise BridgeError("世界或维度已改变，已停止寻路")
                 position = status.get("position") or {}
@@ -2961,6 +2961,8 @@ class McBridgePlugin(Star):
                     raise BridgeError("客户端位置数据不完整") from exc
                 if distance <= max(0.2, min(1.8, float(tolerance))):
                     return
+                if (status.get("navigation_protection") or {}).get("break_budget_exhausted"):
+                    raise BridgeError("客户端侧破坏预算已用完，已停止导航")
                 stuck = None
                 if (status.get('path_feedback') or {}).get('phase')=='CALC_FAILED':
                     stuck = '客户端确认当前路线无路，已停止，不再等到超时'
@@ -2983,6 +2985,12 @@ class McBridgePlugin(Star):
                 await asyncio.sleep(.5)
             raise BridgeError("寻路超时，未确认到达")
         finally:
+            if allow_break and isinstance(last_status, dict):
+                try:
+                    spent = int((last_status.get("navigation_protection") or {}).get("break_count", 0) or 0)
+                    self._break_policy_for().record_navigation_breaks(spent)
+                except Exception:
+                    pass
             await self._call("baritone", {"command": "stop"}, timeout=5)
 
     async def _try_ladder_assist(self, x, y, z):
@@ -3008,15 +3016,32 @@ class McBridgePlugin(Star):
         )
         return not self._err(result)
 
+    def _navigation_break_budget(self) -> int:
+        try:
+            policy = self._break_policy_for()
+            task_id = str(getattr(getattr(self, "_task_current", None), "task_id", "") or "direct")
+            policy.ensure_task(task_id)
+            return min(max(1, int(policy.per_action)), max(0, int(policy.remaining_task_budget())))
+        except Exception:
+            return 0
+
     async def _move_and_wait(self, x, y, z, seconds, allow_break=False):
         import math
         if allow_break:
-            result = await self._call("navigate", {"x": math.floor(x), "y": math.floor(y), "z": math.floor(z), "allow_break": True}, timeout=10)
+            budget = self._navigation_break_budget()
+            if budget <= 0:
+                raise BridgeError("任务破坏预算已用完，不能继续破坏移动")
+            result = await self._call(
+                "navigate",
+                {"x": math.floor(x), "y": math.floor(y), "z": math.floor(z),
+                 "allow_break": True, "max_break": budget},
+                timeout=10,
+            )
         else:
             result = await self._call("baritone", {"command": f"goto {math.floor(x)} {math.floor(y)} {math.floor(z)}"}, timeout=10)
         if self._err(result):
             raise BridgeError(self._err(result))
-        await self._wait_arrival(x, y, z, seconds, allow_ladder_assist=True)
+        await self._wait_arrival(x, y, z, seconds, allow_ladder_assist=True, allow_break=allow_break)
 
     async def _resolve_navigation_target(self, x, y, z):
         """Resolve a block coordinate to a standable cell before queuing goto."""
@@ -3055,13 +3080,18 @@ class McBridgePlugin(Star):
         epoch = CONTROL_EPOCH.get()
         params={"x": int(x), "y": int(y), "z": int(z)}
         if allow_break:
+            budget = self._navigation_break_budget()
+            if budget <= 0:
+                return "任务破坏预算已用完，不能继续破坏移动"
             params["allow_break"] = True
+            params["max_break"] = budget
         nav = await self._call("navigate", params, timeout=10)
         if self._err(nav):
             return self._err(nav)
         deadline = time.monotonic() + max(5, min(30, float(seconds)))
         last = None
         last_change = time.monotonic()
+        last_status = None
         target = (float(x) + 0.5, float(y) + 0.5, float(z) + 0.5)
         try:
             while time.monotonic() < deadline:
@@ -3071,6 +3101,7 @@ class McBridgePlugin(Star):
                 status = await self._call("status", timeout=10)
                 if self._err(status):
                     return self._err(status)
+                last_status = status
                 pos = status.get("position") or {}
                 try:
                     distance = sum((float(pos[k]) - point) ** 2 for k, point in zip(("x", "y", "z"), target)) ** 0.5
@@ -3078,6 +3109,8 @@ class McBridgePlugin(Star):
                     return "客户端位置数据不完整"
                 if distance <= reach:
                     return None
+                if (status.get("navigation_protection") or {}).get("break_budget_exhausted"):
+                    return "客户端侧破坏预算已用完，已停止靠近"
                 if (status.get("path_feedback") or {}).get("phase") == "CALC_FAILED":
                     return "客户端确认当前路线无路，已停止"
                 coords = tuple(float(pos[k]) for k in ("x", "y", "z"))
@@ -3088,6 +3121,12 @@ class McBridgePlugin(Star):
                     return "靠近目标无进展，已停止"
             return "靠近目标超时，未确认到达"
         finally:
+            if allow_break and isinstance(last_status, dict):
+                try:
+                    spent = int((last_status.get("navigation_protection") or {}).get("break_count", 0) or 0)
+                    self._break_policy_for().record_navigation_breaks(spent)
+                except Exception:
+                    pass
             await self._call("baritone", {"command": "stop"}, timeout=5)
 
     @filter.on_llm_request(priority=-9999)

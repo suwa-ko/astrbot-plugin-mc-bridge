@@ -160,7 +160,7 @@ cd mod
 ./gradlew assemble bridgeRegression navigationRegression survivalRegression
 ```
 
-当前基线：Python 328 项测试；Java survival / navigation / bridge 回归。
+当前基线：Python 334 项测试；Java survival / navigation / bridge 回归。
 
 ## 已知限制
 
@@ -168,6 +168,7 @@ cd mod
 - 任务恢复对采集、合成、烧炼、搬运、建造和农业使用阶段检查点；移动、战斗等短技能仍以重新执行为主。
 - 部分技能可能返回 partial/unmet；依赖任务要求前置目标达成。
 - 普通移动默认不拆方块，无路时会先尝试开门，仍无路则寻找附近可站立位置；只有显式 `allow_break=true` 才会受控掘进。
+- 显式允许掘进的导航由客户端按 `max_break` 观察并限制破坏数量；插件在导航结束后把已确认破坏计入任务预算。
 - 默认 `simple` 工具面只暴露常用入口；切换到 `full` 仍会暴露全部细粒度工具。
 - 长任务完成后主动通知，但任务执行期间仍建议只在用户询问时查询一次进度。
 

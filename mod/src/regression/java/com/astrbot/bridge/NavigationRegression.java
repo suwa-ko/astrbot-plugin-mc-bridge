@@ -22,6 +22,13 @@ public final class NavigationRegression {
         require(settings.allowBreak.value,"excavation protection stays enabled");
         navigation.restore();
         require(settings.allowBreak.value&&settings.allowPlace.value&&!settings.allowParkour.value&&settings.freeLook.value,"restore after excavation");
+        var snapshot=new java.util.HashMap<net.minecraft.core.BlockPos,Boolean>();
+        var cell=new net.minecraft.core.BlockPos(0,64,0);
+        require(SurvivalActions.breakTransition(snapshot,cell,true)==0,"first solid observation is not a break");
+        require(SurvivalActions.breakTransition(snapshot,cell,false)==1,"solid to air counts one break");
+        require(SurvivalActions.breakTransition(snapshot,cell,false)==0,"air to air is not counted again");
+        require(SurvivalActions.breakTransition(snapshot,cell,true)==0,"placing a block is not a break");
+        require(SurvivalActions.breakTransition(snapshot,cell,false)==1,"breaking a replaced block counts again");
         System.out.println("Navigation guard regression passed; no game actions or fixture classes in production jar");
     }
 }

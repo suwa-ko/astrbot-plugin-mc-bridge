@@ -33,6 +33,16 @@ class BreakPolicyTests(unittest.TestCase):
             self.assertTrue(policy.preflight(9, 64, 9, "minecraft:stone")[0])
             self.assertEqual(policy.snapshot()["task_used"], 0)
 
+    def test_navigation_breaks_consume_task_budget(self):
+        with tempfile.TemporaryDirectory() as folder:
+            policy = break_mod.BreakPolicy(Path(folder) / "regions.json", per_action=1, per_task=5)
+            policy.begin_task("t")
+            self.assertEqual(policy.remaining_task_budget(), 5)
+            policy.record_navigation_breaks(3)
+            self.assertEqual(policy.remaining_task_budget(), 2)
+            policy.record_navigation_breaks(9)
+            self.assertEqual(policy.remaining_task_budget(), 0)
+
     def test_unnatural_block_requires_opt_in(self):
         with tempfile.TemporaryDirectory() as folder:
             policy = break_mod.BreakPolicy(Path(folder) / "regions.json")

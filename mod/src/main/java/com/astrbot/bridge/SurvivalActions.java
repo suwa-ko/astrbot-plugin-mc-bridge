@@ -185,7 +185,7 @@ final class SurvivalActions {
         if(count>=breakBudgetLimit) {
             breakBudgetExhausted=true;breakBudgetActive=false;navigationTarget=null;
             pathFeedback.end();
-            try{navigation.restore();}catch(ReflectiveOperationException ignored){}
+            navigation.restore();
             if(mc.gameMode!=null)mc.gameMode.stopDestroyBlock();
             if(player.connection!=null)player.connection.sendChat("#stop");
             AstrBotBridge.LOGGER.info("[astrbot-bridge] navigation break budget exhausted after {} blocks",count);

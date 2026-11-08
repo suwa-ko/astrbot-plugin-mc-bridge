@@ -243,6 +243,14 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(m.classify_goal_outcome(None, "goto"), "fulfilled")
         self.assertEqual(m.classify_goal_outcome({"items": [{"ok": True, "moved": 1}], "requested": 1, "moved": 1}), "fulfilled")
 
+    def test_status_shows_navigation_break_budget(self):
+        text = m._fmt_status({"navigation_protection": {
+            "break_monitoring": True, "break_count": 2, "break_limit": 8}})
+        self.assertIn("导航破坏预算: 2/8", text)
+        text = m._fmt_status({"navigation_protection": {
+            "break_budget_exhausted": True, "break_count": 1, "break_limit": 1}})
+        self.assertIn("导航破坏预算: 1/1，已用完", text)
+
     async def test_worker_records_partial_goal_outcome(self):
         p = make_plugin()
         p._record_task_metric = Mock()

@@ -418,6 +418,13 @@ def _fmt_status(data: dict[str, Any]) -> str:
         lines.append(f"护甲: {data.get('armor')}")
     if data.get("held"):
         lines.append(f"手持: {data.get('held')}")
+    protection = data.get("navigation_protection") or {}
+    if protection.get("break_monitoring") or protection.get("break_budget_exhausted"):
+        suffix = "，已用完" if protection.get("break_budget_exhausted") else ""
+        lines.append(
+            f"导航破坏预算: {int(protection.get('break_count', 0) or 0)}/"
+            f"{int(protection.get('break_limit', 0) or 0)}{suffix}"
+        )
     if data.get("server"):
         lines.append(f"服务器: {data.get('server')}")
     inv = data.get("inventory") or []

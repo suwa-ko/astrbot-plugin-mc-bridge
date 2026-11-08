@@ -32,7 +32,7 @@ final class LocalSchedulerFixture {
     private static boolean ended;
     static void tick(Minecraft mc,Path directory){
         if(ended||!"local-scheduler-20261102".equals(System.getProperty("MinecraftBot.acceptance",""))||mc.player==null||mc.getSingleplayerServer()==null
-                ||!mc.getSingleplayerServer().getWorldData().getLevelName().equals("Codex-LocalScheduler-20261102"))return;
+                ||!mc.getSingleplayerServer().getWorldData().getLevelName().equals("Local-Scheduler-20261102"))return;
         output=directory;long now=System.currentTimeMillis();if(now<next)return;next=now+100;
         try{
             if(phase==0){
@@ -213,7 +213,7 @@ final class LocalSchedulerFixture {
         point.addProperty("resource","stone");point.addProperty("target_only",true);command("quarry-debug","scan",point);out.add("scan",replies.get("quarry-debug").deepCopy());return out;
     }
     private static void finish(boolean ok,String error)throws Exception{
-        ended=true;JsonObject r=new JsonObject();r.addProperty("ok",ok);r.addProperty("world","Codex-LocalScheduler-20261102");r.addProperty("cloud_connected",false);r.addProperty("qq_messages_sent",0);r.add("cases",cases);r.addProperty("error",error);r.addProperty("events",events.size());r.addProperty("elapsed_ms",System.currentTimeMillis()-started);
+        ended=true;JsonObject r=new JsonObject();r.addProperty("ok",ok);r.addProperty("world","Local-Scheduler-20261102");r.addProperty("cloud_connected",false);r.addProperty("qq_messages_sent",0);r.add("cases",cases);r.addProperty("error",error);r.addProperty("events",events.size());r.addProperty("elapsed_ms",System.currentTimeMillis()-started);
         if(!ok){JsonArray trace=new JsonArray();for(int i=Math.max(0,events.size()-80);i<events.size();i++)trace.add(events.get(i));r.add("failure_trace",trace);}
         if(!ok&&phase==26)try{r.add("quarry_debug",debugQuarry());}catch(Exception diagnostic){r.addProperty("debug_error",diagnostic.toString());}
         Files.createDirectories(output);Files.writeString(output.resolve("local-scheduler-result.json"),r.toString());

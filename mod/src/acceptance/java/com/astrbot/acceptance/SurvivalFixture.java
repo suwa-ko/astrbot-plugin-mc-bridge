@@ -34,7 +34,7 @@ import net.neoforged.neoforge.common.NeoForge;
 /** Separate TEST jar, never included in the released bridge. Refuses every multiplayer world. */
 @Mod(value="mc_survival_fixture",dist=Dist.CLIENT)
 public final class SurvivalFixture {
-    static final String WORLD="local-scheduler-20261102".equals(System.getProperty("MinecraftBot.acceptance",""))?"Codex-LocalScheduler-20261102":"Codex-Survival-20261101";
+    static final String WORLD="local-scheduler-20261102".equals(System.getProperty("MinecraftBot.acceptance",""))?"Local-Scheduler-20261102":"Local-Survival-20261101";
     private final boolean enabled=Set.of("survival-20261101","local-scheduler-20261102").contains(System.getProperty("MinecraftBot.acceptance",""));
     private final Path output=Path.of(System.getProperty("mc.acceptance.dir","."));
     private boolean opened;

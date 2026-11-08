@@ -136,6 +136,16 @@ class VanillaSkills:
     def __init__(self, plugin):
         self.plugin = plugin
         self._recipes = {}
+        self.checkpoint = None
+
+    def _mark(self, skill, stage, completed=0, total=0, detail=None):
+        callback = getattr(self, "checkpoint", None)
+        if callback is None:
+            return
+        try:
+            callback(str(skill), str(stage), completed=int(completed), total=int(total), detail=detail or {})
+        except Exception:
+            pass
 
     def handlers(self):
         return {
@@ -629,6 +639,7 @@ class VanillaSkills:
         status = await self.status()
         baseline = self.item_count(status, resource)
         deadline = time.monotonic() + max(20, min(600, int(max_seconds)))
+        self._mark("gather", "collecting", 0, target, {"resource": resource})
         tried = set()
         failed = 0
         explored = 0
@@ -741,6 +752,8 @@ class VanillaSkills:
                 failed += 1
                 if failed >= 5:
                     raise SkillError("没有确认到掉落物入包")
+            else:
+                self._mark("gather", "collecting", gained, target, {"resource": resource})
         status = await self.status()
         return {
             "skill": "gather",
@@ -820,6 +833,7 @@ class VanillaSkills:
                 if gained <= 0:
                     raise SkillError(f"合成没有确认入包：{item}")
                 remaining = target - (after - before)
+                self._mark("craft", "crafting", after - before, target, {"item": item})
             return {"skill": "craft_recipe", "item": item, "requested": target, "produced": await self._count(item) - before}
         finally:
             if opened:
@@ -1101,6 +1115,8 @@ class VanillaSkills:
                 seconds=170,
             )
             remaining -= batch
+            produced = max(0, await self._count(item) - before)
+            self._mark("smelt", "smelting", produced, target, {"item": item})
             if collect_only:
                 break
         after = await self._count(item)
@@ -1141,6 +1157,10 @@ class VanillaSkills:
                 await self._call("container", {"operation": "open", "x": int(x), "y": int(y), "z": int(z)}, timeout=10)
             opened = True
             await asyncio.sleep(0.5)
+            try:
+                self.plugin._register_container(int(x), int(y), int(z))
+            except Exception:
+                pass
         return opened
 
     async def _move_one(self, identity, target, direction):
@@ -1170,6 +1190,7 @@ class VanillaSkills:
             if not identity:
                 raise SkillError("请指定物品ID或名称")
             result = await self._move_one(identity, target, direction)
+            self._mark("transfer", "transferring", result.get("moved", 0), target, {"item": identity, "direction": direction})
             result.update({"skill": "transfer", "direction": direction})
             return result
         finally:
@@ -1192,6 +1213,7 @@ class VanillaSkills:
         results = []
         total_requested = 0
         total_moved = 0
+        moved_by_item = {}
         try:
             for move in moves:
                 requested = int(move["count"])
@@ -1203,6 +1225,9 @@ class VanillaSkills:
                     result["ok"] = result["moved"] >= requested
                     results.append(result)
                     total_moved += result["moved"]
+                    moved_by_item[identity] = moved_by_item.get(identity, 0) + result["moved"]
+                    self._mark("transfer_many", "transferring", total_moved, total_requested,
+                               {"moves": moved_by_item, "direction": direction})
                 except Exception as exc:
                     results.append({"item": name, "requested": requested, "moved": 0, "ok": False, "error": str(exc)})
             return {
@@ -1228,7 +1253,7 @@ class VanillaSkills:
         return result
 
     # ------------------------------------------------------------------- build
-    async def build(self, pattern="line", material="minecraft:cobblestone", x=0, y=64, z=0, length=4, width=1, height=1, direction="east"):
+    async def build(self, pattern="line", material="minecraft:cobblestone", x=0, y=64, z=0, length=4, width=1, height=1, direction="east", skip_positions=None):
         pattern = str(pattern or "line").strip().lower()
         material = str(material or "").strip()
         if ":" not in material:
@@ -1240,6 +1265,13 @@ class VanillaSkills:
         length = max(1, min(16, int(length)))
         width = max(1, min(16, int(width)))
         height = max(1, min(8, int(height)))
+        skip = set()
+        for item in (skip_positions or []):
+            if isinstance(item, (list, tuple)) and len(item) >= 3:
+                try:
+                    skip.add((int(item[0]), int(item[1]), int(item[2])))
+                except (TypeError, ValueError):
+                    continue
         positions = []
         if pattern == "line":
             positions = [(int(x) + dx * i, int(y), int(z) + dz * i) for i in range(length)]
@@ -1258,20 +1290,41 @@ class VanillaSkills:
                     for j in range(height):
                         positions.append((int(x) + dx * i - dz * side, int(y) + j, int(z) + dz * i + dx * side))
         positions = list(dict.fromkeys(positions))
+        total_positions = len(positions)
+        all_positions = list(positions)
+        positions = [position for position in positions if position not in skip]
         if len(positions) > 64:
             raise SkillError("单次建造最多64格")
         if await self._count(material) < len(positions):
             raise SkillError(f"材料不足：需要 {len(positions)} 个 {material}")
         placed, errors = 0, []
+        placed_positions = [list(position) for position in skip]
         for px, py, pz in positions:
             try:
                 await self._run("place_at", {"x": px, "y": py, "z": pz, "item": material}, seconds=8)
                 placed += 1
+                placed_positions.append([px, py, pz])
+                self._mark("build", "building", len(placed_positions), total_positions,
+                           {"positions": placed_positions[-64:]})
             except Exception as exc:
                 errors.append({"x": px, "y": py, "z": pz, "error": str(exc)})
                 if len(errors) >= 4:
                     break
-        return {"skill": "build", "pattern": pattern, "material": material, "requested": len(positions), "placed": placed, "errors": errors}
+        if all_positions:
+            xs = [position[0] for position in all_positions]
+            ys = [position[1] for position in all_positions]
+            zs = [position[2] for position in all_positions]
+            try:
+                self.plugin._register_build_region(
+                    f"build-{pattern}-{min(xs)}-{min(ys)}-{min(zs)}",
+                    (min(xs), min(ys), min(zs)),
+                    (max(xs), max(ys), max(zs)),
+                )
+            except Exception:
+                pass
+        return {"skill": "build", "pattern": pattern, "material": material,
+                "requested": total_positions, "already_placed": len(skip),
+                "placed": placed, "errors": errors}
 
     # -------------------------------------------------------------------- farm
     async def farm(self, operation="harvest", radius=8, count=8, replant=True):
@@ -1281,6 +1334,8 @@ class VanillaSkills:
         radius = max(2, min(12, int(radius)))
         target = max(1, min(32, int(count)))
         harvested = planted = 0
+        total_work = target * (2 if operation == "both" else 1)
+        self._mark("farm", "farming", 0, total_work, {"operation": operation, "harvested": 0, "planted": 0})
         if operation in {"harvest", "both"}:
             data = await self._call("scan_blocks", {"radius": radius, "limit": 32, "block": "minecraft:wheat"}, timeout=10)
             crops = [row for row in (data.get("blocks") or []) if isinstance(row, dict)]
@@ -1300,6 +1355,8 @@ class VanillaSkills:
                             planted += 1
                         except Exception:
                             pass
+                    self._mark("farm", "farming", harvested + planted, total_work,
+                               {"operation": operation, "harvested": harvested, "planted": planted})
                 except Exception:
                     continue
         if operation in {"plant", "both"} and planted == 0:
@@ -1313,6 +1370,8 @@ class VanillaSkills:
                 try:
                     await self._run("plant", {"x": row["x"], "y": row["y"], "z": row["z"]}, seconds=6)
                     planted += 1
+                    self._mark("farm", "farming", harvested + planted, total_work,
+                               {"operation": operation, "harvested": harvested, "planted": planted})
                 except Exception:
                     continue
         return {"skill": "farm", "operation": operation, "harvested": harvested, "planted": planted}

@@ -35,6 +35,7 @@ Minecraft 生存助手由两部分组成：
 | 生存与战斗 | 自动进食、睡觉、躲避危险、攻击附近敌对生物；低血时撤离 |
 | 探索与补给 | 探索附近资源或地点，补充食物、火把、方块和工具 |
 | 任务管理 | 自然语言提交任务，查看进度，取消任务；任务完成后主动通知 |
+| 安全与保护 | 保护已登记的建筑和容器，限制单次/单任务破坏数量 |
 
 ### 任务示例
 
@@ -116,12 +117,14 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 | `game_allowed_players` | 允许通过游戏聊天指挥机器人的玩家 |
 | `game_chat_names` | 游戏内唤醒机器人的名字 |
 | `auto_survive` | 是否启用低血/危险自动反应 |
+| `tool_profile` | `simple` 只暴露常用入口（默认）；`full` 暴露全部工具，适合调试 |
 | `shared_memory_enabled` | 是否允许读取主人授权的 MC 相关聊天记忆 |
 
 ## 兼容性
 
 | 插件 | Mod | 协议 |
 |---|---|---|
+| 1.2.x | 0.7.x | 3 |
 | 1.1.x | 0.7.x | 3 |
 | 1.0.x | 0.6.x | 3 |
 
@@ -156,7 +159,7 @@ cd mod
 ./gradlew assemble bridgeRegression navigationRegression survivalRegression
 ```
 
-当前基线：Python 296 项测试；Java survival / navigation / bridge 回归。
+当前基线：Python 312 项测试；Java survival / navigation / bridge 回归。
 
 ## 已知限制
 
@@ -164,7 +167,8 @@ cd mod
 - 任务恢复目前以重新执行和剩余时间收缩为主，还不是完整阶段续作。
 - 部分技能可能返回 partial/unmet；依赖任务要求前置目标达成。
 - 普通移动默认不拆方块，无路时会先尝试开门，仍无路才回退一次受控掘进。
-- 工具数量较多，复杂任务仍可能消耗较多模型轮次。
+- 默认 `simple` 工具面只暴露常用入口；切换到 `full` 仍会暴露全部细粒度工具。
+- 长任务完成后主动通知，但任务执行期间仍建议只在用户询问时查询一次进度。
 
 ## 许可证
 

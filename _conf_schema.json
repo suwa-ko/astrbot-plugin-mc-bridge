@@ -185,5 +185,29 @@
     "type": "int",
     "default": 4,
     "hint": "1到8；忙碌时排队，不覆盖新内容；停止、断线后旧请求不恢复。"
+  },
+  "break_budget_per_action": {
+    "description": "单次动作最多破坏的方块数",
+    "type": "int",
+    "default": 8,
+    "hint": "1-64；超过预算的挖掘会被拒绝。"
+  },
+  "break_budget_per_task": {
+    "description": "单个任务最多破坏的方块数",
+    "type": "int",
+    "default": 64,
+    "hint": "1-512；保护区域和容器不受预算影响，始终禁止破坏。"
+  },
+  "break_allow_unnatural": {
+    "description": "允许破坏非自然方块",
+    "type": "bool",
+    "default": false,
+    "hint": "默认只允许原木、石头、泥土、沙子、矿石、植物等自然方块。"
+  },
+  "tool_profile": {
+    "description": "暴露给模型的工具范围",
+    "type": "string",
+    "default": "simple",
+    "hint": "simple 只暴露常用入口（推荐）；full 暴露全部73个工具，适合调试。"
   }
 }

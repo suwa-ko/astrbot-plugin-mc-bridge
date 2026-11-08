@@ -27,5 +27,9 @@
   "screenshot_keep_count": 20,
   "shared_memory_enabled": true,
   "shared_memory_owner_qq": "",
-  "shared_memory_owner_session": ""
+  "shared_memory_owner_session": "",
+  "tool_profile": "simple",
+  "break_budget_per_action": 8,
+  "break_budget_per_task": 64,
+  "break_allow_unnatural": false
 }

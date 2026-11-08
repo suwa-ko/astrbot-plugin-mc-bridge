@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+from .task_checkpoint import clean_baseline, clean_checkpoint
+
 
 class TaskRecovery:
     def __init__(self, path, max_records=20):
@@ -43,14 +45,22 @@ class TaskRecovery:
         resources = row.get("resources")
         if not isinstance(resources, list):
             resources = []
+        dependencies = row.get("dependencies")
+        if not isinstance(dependencies, list):
+            dependencies = []
+        group_id = str(row.get("group_id") or recovery_id).strip()[:80]
         return {
             "recovery_id": recovery_id[:80],
+            "group_id": group_id or recovery_id[:80],
             "opcode": opcode[:80],
             "params": params,
             "priority": priority,
             "resources": [str(item)[:40] for item in resources][:16],
+            "dependencies": [str(item)[:80] for item in dependencies][:16],
             "goal": str(row.get("goal") or "")[:160],
             "remaining_seconds": round(remaining, 3),
+            "checkpoint": clean_checkpoint(row.get("checkpoint")),
+            "baseline": clean_baseline(row.get("baseline")),
             "saved_at": float(row.get("saved_at", 0) or time.time()),
         }
 
@@ -76,7 +86,7 @@ class TaskRecovery:
             self.items = self.items[-self.max_records:]
 
     def save(self):
-        payload = {"version": 1, "items": self.items[-self.max_records:]}
+        payload = {"version": 2, "items": self.items[-self.max_records:]}
         temporary = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +124,20 @@ class TaskRecovery:
             if row["recovery_id"] == recovery_id:
                 return dict(row)
         return None
+
+    def group(self, group_id):
+        group_id = str(group_id or "")
+        return [dict(row) for row in self.items if row["group_id"] == group_id]
+
+    def discard_group(self, group_id):
+        group_id = str(group_id or "")
+        with self._lock:
+            before = len(self.items)
+            self.items = [row for row in self.items if row["group_id"] != group_id]
+            changed = len(self.items) != before
+            if changed:
+                self.save()
+        return changed
 
     def discard(self, recovery_id):
         recovery_id = str(recovery_id or "")

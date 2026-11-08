@@ -17,6 +17,7 @@ task_journal.jsonl
 task_recovery.json
 short_history.json
 poi_memory.json
+protected_regions.json
 screenshots/
 *.db
 *.db-shm

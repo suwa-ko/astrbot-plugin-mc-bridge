@@ -59,6 +59,7 @@ mc_block_context          方块上下文和可站位
 mc_get_menu               当前菜单/容器
 mc_task_status            任务状态和最近结果
 mc_recipes                服务器同步配方
+mc_protect                管理建筑/容器保护区域
 ```
 
 ## 动作原语
@@ -71,3 +72,5 @@ mc_use_item / mc_interact / mc_equip
 ```
 
 具体参数以 AstrBot 工具列表为准。普通移动默认不开启破坏；被挡住时先尝试开门，仍无路才使用一次受控掘进。
+
+默认 `tool_profile=simple` 只暴露常用入口（`mc_brief`、`mc_task_start`、`mc_task_status`、`mc_task_cancel`、`mc_stop`、`mc_inventory`、`mc_recipes`、`mc_memory`、`mc_protect`、`mc_goto`、`mc_screenshot`）。需要坐标微操或调试时，可改为 `full` 暴露全部工具。

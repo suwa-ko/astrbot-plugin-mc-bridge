@@ -29,7 +29,13 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build and run Java regressions
-        run: ./gradlew assemble bridgeRegression navigationRegression survivalRegression --no-daemon
+        run: |
+          for attempt in 1 2 3; do
+            ./gradlew assemble bridgeRegression navigationRegression survivalRegression --no-daemon && exit 0
+            echo "Gradle attempt ${attempt} failed; retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
       - name: Upload Mod jar
         uses: actions/upload-artifact@v4

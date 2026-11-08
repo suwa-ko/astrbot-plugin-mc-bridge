@@ -117,6 +117,32 @@ class TaskCheckpointTests(unittest.TestCase):
         self.assertEqual(plan["mode"], "rerun")
         self.assertEqual(plan["params"], {"item": "minecraft:stick", "count": 4})
 
+    def test_checkpoint_for_another_item_reruns(self):
+        plan = checkpoint_mod.resume_plan(
+            "craft",
+            {"item": "minecraft:stone_pickaxe", "count": 1},
+            {"skill": "craft", "completed": 8, "total": 8, "detail": {"item": "minecraft:stick"}},
+        )
+        self.assertEqual(plan["mode"], "rerun")
+        self.assertEqual(plan["params"]["count"], 1)
+
+    def test_checkpoint_for_another_resource_reruns(self):
+        plan = checkpoint_mod.resume_plan(
+            "gather",
+            {"resource": "iron", "count": 4},
+            {"skill": "gather", "completed": 2, "total": 4, "detail": {"resource": "logs"}},
+        )
+        self.assertEqual(plan["mode"], "rerun")
+
+    def test_checkpoint_for_another_transfer_direction_reruns(self):
+        plan = checkpoint_mod.resume_plan(
+            "transfer",
+            {"item": "minecraft:cobblestone", "count": 8, "direction": "from_container"},
+            {"skill": "transfer", "completed": 2, "total": 8,
+             "detail": {"item": "minecraft:cobblestone", "direction": "to_container"}},
+        )
+        self.assertEqual(plan["mode"], "rerun")
+
     def test_recovery_preserves_checkpoint_group_and_baseline(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "recovery.json"

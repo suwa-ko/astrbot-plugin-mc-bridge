@@ -174,6 +174,29 @@ def resume_plan(opcode: str, params: dict[str, Any] | None, checkpoint: dict[str
                 "note": "没有匹配的阶段检查点，按原参数重新执行"}
     completed = max(0, int(checkpoint.get("completed", 0) or 0))
     total = max(0, int(checkpoint.get("total", 0) or 0))
+    detail = checkpoint.get("detail", {}) if isinstance(checkpoint.get("detail"), dict) else {}
+    if opcode in {"gather", "mine_ore"}:
+        expected = str(original.get("resource", "logs") or "logs")
+        actual = str(detail.get("resource") or "")
+        if actual and actual != expected:
+            return {"params": original, "mode": "rerun", "checkpoint": checkpoint,
+                    "note": "检查点属于另一类采集目标，按原参数重新执行"}
+    if opcode in {"craft", "craft_item", "smelt", "smelt_item"}:
+        expected = str(original.get("item", "") or "")
+        actual = str(detail.get("item") or "")
+        if actual and expected and actual.split(":")[-1] != expected.split(":")[-1]:
+            return {"params": original, "mode": "rerun", "checkpoint": checkpoint,
+                    "note": "检查点属于另一个物品，按原参数重新执行"}
+    if opcode in {"transfer", "transfer_item"}:
+        expected = str(original.get("item", "") or "")
+        actual = str(detail.get("item") or "")
+        if actual and expected and actual.split(":")[-1] != expected.split(":")[-1]:
+            return {"params": original, "mode": "rerun", "checkpoint": checkpoint,
+                    "note": "检查点属于另一个物品，按原参数重新执行"}
+        direction = str(original.get("direction", "to_container") or "to_container")
+        if detail.get("direction") and str(detail["direction"]) != direction:
+            return {"params": original, "mode": "rerun", "checkpoint": checkpoint,
+                    "note": "检查点搬运方向不同，按原参数重新执行"}
     if completed <= 0:
         return {"params": original, "mode": "rerun", "checkpoint": checkpoint,
                 "note": "检查点没有已确认进度，按原参数重新执行"}

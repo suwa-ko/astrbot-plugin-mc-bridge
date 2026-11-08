@@ -44,7 +44,7 @@ Minecraft NeoForge 客户端 + astrbot_bridge Mod
 
 推荐使用 Release 中的 `astrbot_plugin_mc_bridge-<version>.zip`：
 
-1. 在 AstrBot WebUI 的插件页选择“从文件安装”，上传 ZIP；或把 ZIP 解压到 `data/plugins/astrbot_plugin_mc_bridge/`。
+1. 在 AstrBot WebUI 的插件页选择“从文件安装”，上传 ZIP；或创建 `data/plugins/astrbot_plugin_mc_bridge/`，把 ZIP 内容解压进去。
 2. 如果手动安装依赖：
 
    ```bash

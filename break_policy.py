@@ -188,6 +188,22 @@ class BreakPolicy:
                 return dict(row)
         return None
 
+    def intersects(self, minimum: tuple[int, int, int], maximum: tuple[int, int, int],
+                   dimension: str = "") -> dict[str, Any] | None:
+        min_x, max_x = sorted((int(minimum[0]), int(maximum[0])))
+        min_y, max_y = sorted((int(minimum[1]), int(maximum[1])))
+        min_z, max_z = sorted((int(minimum[2]), int(maximum[2])))
+        dimension = str(dimension or "")
+        for row in self.regions:
+            if row.get("dimension") and dimension and row["dimension"] != dimension:
+                continue
+            if (max_x < row["min_x"] or min_x > row["max_x"]
+                    or max_y < row["min_y"] or min_y > row["max_y"]
+                    or max_z < row["min_z"] or min_z > row["max_z"]):
+                continue
+            return dict(row)
+        return None
+
     def begin_task(self, task_id: str) -> None:
         self._task_id = str(task_id or "direct")
         self._task_count = 0

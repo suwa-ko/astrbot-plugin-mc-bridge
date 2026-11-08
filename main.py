@@ -1250,11 +1250,12 @@ class McBridgePlugin(Star):
                 dimension = str(status.get("dimension") or "")
                 target = (int(params.get("x", position.get("x", 0))), int(params.get("y", position.get("y", 0))), int(params.get("z", position.get("z", 0))))
                 policy = self._break_policy_for()
-                for dx in (-8, 0, 8):
-                    for dz in (-8, 0, 8):
-                        if policy.is_protected(target[0] + dx, target[1], target[2] + dz, dimension):
-                            params["allow_break"] = False
-                            return None
+                start = (int(position.get("x", target[0])), int(position.get("y", target[1])), int(position.get("z", target[2])))
+                low = (min(start[0], target[0]) - 8, min(start[1], target[1]) - 8, min(start[2], target[2]) - 8)
+                high = (max(start[0], target[0]) + 8, max(start[1], target[1]) + 8, max(start[2], target[2]) + 8)
+                if policy.intersects(low, high, dimension):
+                    params["allow_break"] = False
+                    return None
                 task_id = str(getattr(getattr(self, "_task_current", None), "task_id", "") or "direct")
                 allowed, _ = policy.check(target[0], target[1], target[2], "minecraft:stone",
                                           count=1, dimension=dimension, task_id=task_id)

@@ -58,6 +58,13 @@ class BreakPolicyTests(unittest.TestCase):
             self.assertTrue(again.remove("shed"))
             self.assertEqual(again.list(), [])
 
+    def test_corridor_intersects_protected_region(self):
+        with tempfile.TemporaryDirectory() as folder:
+            policy = break_mod.BreakPolicy(Path(folder) / "regions.json")
+            policy.add_box("home", (0, 60, 0), (10, 80, 10))
+            self.assertIsNotNone(policy.intersects((-20, 60, -20), (20, 70, 20)))
+            self.assertIsNone(policy.intersects((30, 60, 30), (40, 70, 40)))
+
     def test_category_mapping(self):
         self.assertEqual(break_mod.block_category("minecraft:oak_log"), "logs")
         self.assertEqual(break_mod.block_category("minecraft:iron_ore"), "ore")

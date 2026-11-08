@@ -196,6 +196,34 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p._move_and_wait.await_count, 2)
         self.assertTrue(p._move_and_wait.await_args_list[1].kwargs.get("allow_break"))
 
+    async def test_goto_falls_back_to_nearby_stand_and_reports_partial(self):
+        p = make_plugin()
+        p._try_open_nearby_door = AsyncMock(return_value=False)
+        p._goto_candidates = AsyncMock(return_value=[(1, 64, 2), (2, 64, 2)])
+        p._move_and_wait = AsyncMock(side_effect=[
+            m.BridgeError("客户端确认当前路线无路，已停止，不再等到超时"),
+            m.BridgeError("客户端确认当前路线无路，已停止，不再等到超时"),
+            None,
+        ])
+        result = await p._run_goto_task(m.QueuedTask("goto", "go", x=1, y=64, z=2))
+        self.assertEqual(result["goal_outcome"], "partial")
+        self.assertEqual(result["arrived_near"], {"x": 2, "y": 64, "z": 2})
+        self.assertEqual(p._move_and_wait.await_count, 3)
+        self.assertFalse(p._move_and_wait.await_args_list[2].kwargs.get("allow_break"))
+
+    async def test_goto_candidates_scans_below_unstandable_target(self):
+        p = make_plugin()
+        async def fake_call(action, params=None, timeout=10):
+            y = int((params or {}).get("y", 0))
+            if y == 87:
+                return {"stands": [{"x": -349, "y": 86, "z": -152,
+                                    "feet_y": 86.0, "distance": 8.0}]}
+            return {"stands": []}
+        p._call = fake_call
+        candidates = await p._goto_candidates(-350, 94, -152)
+        self.assertEqual(candidates[0], (-350, 94, -152))
+        self.assertIn((-349, 86, -152), candidates)
+
     async def test_goto_explicit_break_does_not_retry_forever(self):
         p = make_plugin()
         p._move_and_wait = AsyncMock(side_effect=m.BridgeError("客户端确认当前路线无路"))
@@ -347,6 +375,12 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["active"])
         self.assertTrue(result["client_stop_confirmed"])
         p._stop_task_runtime.assert_awaited_once()
+
+    async def test_mc_stop_reports_client_confirmation(self):
+        p = make_plugin()
+        p._stop_task_runtime = AsyncMock(return_value=None)
+        result = await p.mc_stop(Event("mcstop"))
+        self.assertIn("client_stop_confirmed=true", result)
 
     async def test_goto_link_loss_never_reports_arrival(self):
         p = make_plugin()

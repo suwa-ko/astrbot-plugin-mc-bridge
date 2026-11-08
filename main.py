@@ -1464,8 +1464,7 @@ class McBridgePlugin(Star):
 
     async def _execute_task_item(self, item):
         if item.kind == "goto":
-            await self._run_goto_task(item)
-            return None
+            return await self._run_goto_task(item)
         if item.kind == "come":
             await self._run_come_task(item)
             return None
@@ -1619,24 +1618,113 @@ class McBridgePlugin(Star):
         except Exception:
             return False
 
-    async def _run_goto_task(self, item: QueuedTask) -> None:
+    async def _goto_candidates(self, x, y, z):
+        """Return standable cells near the target, nearest first.
+
+        A valid coordinate can still be unstandable, for example the mouth of a
+        shaft where the floor is many blocks below.  Probe the target block
+        first, then the target column up/down and finally four adjacent columns;
+        all probes are bounded so a failed move cannot stall the task queue.
+        """
+        target = (int(x), int(y), int(z))
+        found = []
+        seen = {target}
+
+        async def probe(px: int, py: int, pz: int) -> None:
+            try:
+                context = await self._call("block_context", {"x": px, "y": py, "z": pz}, timeout=8)
+            except Exception:
+                return
+            if self._err(context):
+                return
+            for row in context.get("stands") or []:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    candidate = (
+                        int(row["x"]),
+                        int(round(float(row.get("feet_y", row.get("y", py))))),
+                        int(row["z"]),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if candidate not in seen:
+                    seen.add(candidate)
+                    found.append(candidate)
+
+        limit = 6
+        await probe(*target)
+        for delta in range(1, 13):
+            if len(found) >= limit:
+                break
+            await probe(target[0], target[1] - delta, target[2])
+        for delta in range(1, 5):
+            if len(found) >= limit:
+                break
+            await probe(target[0], target[1] + delta, target[2])
+        if len(found) < 2:
+            for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                if len(found) >= limit:
+                    break
+                await probe(target[0] + dx, target[1], target[2] + dz)
+                for delta in range(1, 9):
+                    if len(found) >= limit:
+                        break
+                    await probe(target[0] + dx, target[1] - delta, target[2] + dz)
+        found.sort(key=lambda cell: (
+            (cell[0] - target[0]) ** 2 + (cell[1] - target[1]) ** 2 + (cell[2] - target[2]) ** 2,
+            abs(cell[1] - target[1]),
+        ))
+        return [target] + found
+
+    async def _run_goto_task(self, item: QueuedTask) -> dict:
         await self._task_chat(f"移动到 {item.x} {item.y} {item.z}")
         explicit = bool(item.params.get("allow_break"))
+        target = (int(item.x), int(item.y), int(item.z))
+        last_error = None
         try:
             await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=explicit)
+            await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
+            return {"goal_outcome": "fulfilled", "target": target}
         except BridgeError as exc:
+            last_error = exc
             if explicit or not any(word in str(exc) for word in ("当前路线无路", "寻路无进展")):
                 raise
+        try:
             if await self._try_open_nearby_door():
                 try:
                     await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=False)
+                    await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
+                    return {"goal_outcome": "fulfilled", "target": target}
                 except BridgeError:
-                    await self._task_chat("开门后仍无路，尝试挖开挡路方块")
+                    await self._task_chat("开门后仍无路，尝试受控掘进")
                     await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=True)
             else:
-                await self._task_chat("普通寻路失败，尝试挖开挡路方块")
+                await self._task_chat("普通寻路失败，尝试受控掘进")
                 await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=True)
-        await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
+            await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
+            return {"goal_outcome": "fulfilled", "target": target}
+        except BridgeError as exc:
+            last_error = exc
+        for candidate in await self._goto_candidates(*target):
+            if candidate == target:
+                continue
+            try:
+                await self._move_and_wait(candidate[0], candidate[1], candidate[2], 90, allow_break=False)
+                await self._task_chat(
+                    f"到了目标附近 {candidate[0]} {candidate[1]} {candidate[2]}"
+                    f"（原目标 {item.x} {item.y} {item.z}）"
+                )
+                return {
+                    "goal_outcome": "partial",
+                    "target": target,
+                    "arrived_near": {"x": candidate[0], "y": candidate[1], "z": candidate[2]},
+                }
+            except BridgeError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise BridgeError("寻路失败，未找到可到达的目标或附近站位")
 
     async def _run_come_task(self, item: QueuedTask) -> None:
         data = await self._call("come", {"player": item.target}, timeout=10)
@@ -2067,7 +2155,7 @@ class McBridgePlugin(Star):
     async def mc_stop(self, event: AstrMessageEvent):
         """立刻停止机器人的 Baritone 移动/跟随，并取消当前任务。"""
         error = await self._stop_task_runtime()
-        return error or "停止指令已送达，任务队列已清空"
+        return error or "停止指令已确认（client_stop_confirmed=true），任务队列已清空"
 
     @filter.llm_tool(name="mc_look")
     @require_mc_tool("mc_look")
@@ -2674,7 +2762,7 @@ class McBridgePlugin(Star):
             return
         if action == "stop":
             error = await self._interrupt_actions(requester_route=route)
-            yield event.plain_result(error or "停止指令已送达，任务队列已清空")
+            yield event.plain_result(error or "停止指令已确认（client_stop_confirmed=true），任务队列已清空")
             return
         if action == "shot":
             try:
@@ -2951,28 +3039,15 @@ class McBridgePlugin(Star):
                 "block": context.get("block", ""),
                 "original": {"x": x, "y": y, "z": z},
             }
-        for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
-            for dy in (0, -1, 1):
-                nx, ny, nz = x + dx, y + dy, z + dz
-                neighbor = await self._call("block_context", {"x": nx, "y": ny, "z": nz}, timeout=10)
-                if self._err(neighbor):
-                    continue
-                if neighbor.get("standable"):
-                    return (nx, ny, nz), {
-                        "adjusted": True,
-                        "source": "neighbor",
-                        "block": context.get("block", ""),
-                        "original": {"x": x, "y": y, "z": z},
-                    }
-                nearby = [row for row in (neighbor.get("stands") or []) if isinstance(row, dict)]
-                if nearby:
-                    stand = min(nearby, key=lambda row: float(row.get("distance", 999) or 999))
-                    return (int(stand["x"]), int(round(float(stand.get("feet_y", stand.get("y", ny))))), int(stand["z"])), {
-                        "adjusted": True,
-                        "source": "neighbor_stand",
-                        "block": context.get("block", ""),
-                        "original": {"x": x, "y": y, "z": z},
-                    }
+        for candidate in await self._goto_candidates(x, y, z):
+            if candidate == (x, y, z):
+                continue
+            return candidate, {
+                "adjusted": True,
+                "source": "nearby_stand",
+                "block": context.get("block", ""),
+                "original": {"x": x, "y": y, "z": z},
+            }
         return None, "目标不可站立，附近也没有可用站位；请先换一个入口或站位"
 
     async def _approach_target(self, x, y, z, seconds=20, reach=4.0, allow_break=False):

@@ -7,7 +7,7 @@ desc: |
   支持采集木材、矿石和作物，合成工具、烧炼材料、整理箱子，以及建造、耕种、战斗、睡觉、探索和回家。多步骤任务可以查看进度、取消，并在完成后主动通知；低血量、敌人靠近或目标不可达时会自动停下。可登记建筑和容器保护，并限制单次/单任务破坏预算。
 
   需要配合 NeoForge 客户端 Mod 使用，适用于单人世界和允许客户端操作的服务器。
-version: 1.3.0
+version: 1.3.1
 author: suwa-ko
 repo: https://github.com/suwa-ko/astrbot-plugin-mc-bridge
 astrbot_version: ">=4.16,<5"

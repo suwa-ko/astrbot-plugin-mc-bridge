@@ -178,6 +178,30 @@ def resume_plan(opcode: str, params: dict[str, Any] | None, checkpoint: dict[str
         return {"params": original, "mode": "rerun", "checkpoint": checkpoint,
                 "note": "检查点没有已确认进度，按原参数重新执行"}
     if opcode in COUNT_SKILLS:
+        if opcode == "farm":
+            operation = str(original.get("operation", "harvest") or "harvest").lower()
+            target = max(1, _to_int(original.get("count"), 1))
+            detail = checkpoint.get("detail", {}) if isinstance(checkpoint.get("detail"), dict) else {}
+            harvested = max(0, _to_int(detail.get("harvested"), 0))
+            planted = max(0, _to_int(detail.get("planted"), 0))
+            if operation == "both":
+                remain_harvest = max(0, target - harvested)
+                remain_plant = max(0, target - planted)
+                if remain_harvest <= 0 and remain_plant <= 0:
+                    return {"params": original, "mode": "complete", "checkpoint": checkpoint,
+                            "note": "检查点显示收割和补种都已完成"}
+                adjusted = dict(original)
+                if remain_harvest > 0 and remain_plant > 0:
+                    adjusted["operation"] = "both"
+                    adjusted["count"] = max(remain_harvest, remain_plant)
+                elif remain_harvest > 0:
+                    adjusted["operation"] = "harvest"
+                    adjusted["count"] = remain_harvest
+                else:
+                    adjusted["operation"] = "plant"
+                    adjusted["count"] = remain_plant
+                return {"params": adjusted, "mode": "checkpoint", "checkpoint": checkpoint,
+                        "note": f"从检查点继续：已收割 {harvested}/{target}，已补种 {planted}/{target}"}
         remaining = _remaining_count(original, completed)
         if remaining <= 0:
             return {"params": original, "mode": "complete", "checkpoint": checkpoint,

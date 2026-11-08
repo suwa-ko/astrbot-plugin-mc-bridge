@@ -92,6 +92,22 @@ class TaskCheckpointTests(unittest.TestCase):
         self.assertEqual(plan["mode"], "checkpoint")
         self.assertEqual(plan["params"]["skip_positions"], [[1, 64, 2], [2, 64, 2]])
 
+    def test_farm_both_resumes_only_unfinished_side(self):
+        plan = checkpoint_mod.resume_plan(
+            "farm",
+            {"operation": "both", "count": 4},
+            {
+                "skill": "farm",
+                "stage": "farming",
+                "completed": 6,
+                "total": 8,
+                "detail": {"operation": "both", "harvested": 4, "planted": 2},
+            },
+        )
+        self.assertEqual(plan["mode"], "checkpoint")
+        self.assertEqual(plan["params"]["operation"], "plant")
+        self.assertEqual(plan["params"]["count"], 2)
+
     def test_unmatched_checkpoint_reruns(self):
         plan = checkpoint_mod.resume_plan(
             "craft",

@@ -30,7 +30,7 @@ $env:MC_PLUGIN_FILE = "$PWD\main.py"
 python -m unittest discover -s tests -v
 ```
 
-当前基线 313 项。
+当前基线 314 项。
 
 ## Mod 构建
 
@@ -61,8 +61,8 @@ cd mod
 4. 打 tag：
 
    ```bash
-   git tag v1.2.0
-   git push origin v1.2.0
+   git tag v1.2.1
+   git push origin v1.2.1
    ```
 
 5. CI 生成 release 资产：

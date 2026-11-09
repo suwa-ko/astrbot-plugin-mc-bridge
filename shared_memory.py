@@ -87,6 +87,16 @@ class McSharedMemory:
     def _redact(self, text) -> str:
         return redact_text(text, world_keys=self.known_world_keys)
 
+    def _sanitize_metadata(self, meta: dict, source_kind: str) -> dict:
+        meta = dict(meta or {})
+        for key in ("canonical_summary", "persona_summary", "summary", "experience_narration",
+                    "text", "content"):
+            value = meta.get(key)
+            if isinstance(value, str) and value:
+                meta[key] = memory_safe_text(value, source_kind=source_kind,
+                                             world_keys=self.known_world_keys)
+        return meta
+
     @property
     def shared_scope(self) -> str:
         return "livingmemory:mc-shared:shared"
@@ -388,7 +398,7 @@ class McSharedMemory:
         never sends it to embedding or rerank.  Date-query output is redacted by
         ``memory_safe_text`` before it reaches a model.
         """
-        setting = f"native_redaction_v2:{self.scope}:{self.persona}"
+        setting = f"native_redaction_v3:{self.scope}:{self.persona}"
         cursor = await self.db.execute("SELECT value FROM settings WHERE key=?", (setting,))
         if await cursor.fetchone():
             self._legacy_redaction_done = True
@@ -423,6 +433,7 @@ class McSharedMemory:
             dirty = (contains_coordinate(text) or has_world_identifier(text) or qq_raw)
             if not dirty and status != "redacted":
                 continue
+            meta = self._sanitize_metadata(meta, source_kind)
             if dirty:
                 meta["model_safe"] = False
                 meta["status"] = "redacted"
@@ -432,17 +443,39 @@ class McSharedMemory:
                                          world_keys=self.known_world_keys)
             if not safe_text:
                 safe_text = "旧MC记忆（已脱敏）"
-            if status == "redacted" and safe_text == text and not dirty:
-                continue
             await engine.db_connection.execute(
                 "UPDATE documents SET text=?, metadata=? WHERE id=?",
                 (safe_text, json.dumps(meta, ensure_ascii=False), identifier))
             if graph_db is not None:
                 try:
-                    await graph_db.execute(
-                        "UPDATE documents SET text=?, metadata=?, updated_at=CURRENT_TIMESTAMP "
-                        "WHERE doc_id=?",
-                        (safe_text, json.dumps(meta, ensure_ascii=False), str(identifier)))
+                    graph_text = f"Fact: {safe_text}. Summary: {safe_text}"[:2000]
+                    cursor = await graph_db.execute(
+                        "SELECT id,metadata FROM documents "
+                        "WHERE json_extract(metadata,'$.source_memory_id')=?",
+                        (identifier,))
+                    for graph_id, graph_raw in await cursor.fetchall():
+                        try:
+                            graph_meta = (json.loads(graph_raw) if isinstance(graph_raw, str)
+                                          else dict(graph_raw or {}))
+                        except Exception:
+                            graph_meta = {}
+                        graph_meta = self._sanitize_metadata(graph_meta, source_kind)
+                        graph_meta["status"] = "redacted"
+                        graph_meta["model_safe"] = False
+                        graph_meta["redacted_at"] = meta.get("redacted_at") or time.time()
+                        graph_meta["redaction_reason"] = "legacy_coordinate_or_private_chat"
+                        await graph_db.execute(
+                            "UPDATE documents SET text=?, metadata=?, updated_at=CURRENT_TIMESTAMP "
+                            "WHERE id=?",
+                            (graph_text, json.dumps(graph_meta, ensure_ascii=False), int(graph_id)))
+                        try:
+                            await graph_db.execute(
+                                "DELETE FROM documents_fts WHERE rowid=?", (int(graph_id),))
+                            await graph_db.execute(
+                                "INSERT INTO documents_fts(rowid, search_text) VALUES(?,?)",
+                                (int(graph_id), graph_text))
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             changed += 1

@@ -180,6 +180,21 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertNotIn("-152", rows[0]["content"])
         self.assertNotIn("world-a", rows[0]["content"])
 
+    def test_verify_place_records_stand_from_block_context(self):
+        row = self.store.remember_place(
+            world_key="world-a", world_instance=self.world, dimension="minecraft:overworld",
+            kind="home_bed", key="main", target=(1, 64, 2), stand=None,
+            target_status="unknown", stand_status="unknown", observation_status="unloaded",
+            status="candidate",
+        )
+        self.assertIsNone(row["stand_x"])
+        verified = self.store.verify_place(
+            row["public_ref"], target_status="valid", stand_status="valid",
+            observation_status="loaded", stand={"x": 2, "y": 64, "z": 2, "feet_y": 64},
+        )
+        self.assertEqual(verified["stand_x"], 2)
+        self.assertTrue(self.store.safe_view(verified)["has_stand"])
+
     def test_verify_place_activates_and_navigation_resolves(self):
         row = self.remember(target_status="unknown", stand_status="unknown",
                             observation_status="unloaded", status="candidate")
@@ -233,7 +248,9 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(row["public_ref"], payload)
         cards = event.get_extra("_mc_place_cards")
         self.assertTrue(cards)
-        self.assertIn("-375", "\n".join(cards))
+        text = "\n".join(item.get("text", "") if isinstance(item, dict) else str(item)
+                         for item in cards)
+        self.assertIn("-375", text)
 
     async def test_mc_memory_can_read_saved_places_while_game_offline(self):
         self.remember()
@@ -242,7 +259,10 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         result = json.loads(await self.plugin.mc_memory(event, operation="get", kind="home_bed"))
         self.assertTrue(result["found"])
         self.assertTrue(result["offline"])
-        self.assertIn("-375", "\n".join(event.get_extra("_mc_place_cards") or []))
+        cards = event.get_extra("_mc_place_cards") or []
+        text = "\n".join(item.get("text", "") if isinstance(item, dict) else str(item)
+                         for item in cards)
+        self.assertIn("-375", text)
 
     async def test_group_memory_only_returns_shared_projection(self):
         self.plugin.config["shared_memory_group_whitelist"] = "111"

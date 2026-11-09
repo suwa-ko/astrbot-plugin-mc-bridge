@@ -715,11 +715,13 @@ class MemoryStore:
         note: str = "",
         actor: str = "",
         world_instance: str = "",
+        stand=None,
     ) -> dict | None:
         row = self.get_place(place_ref)
         if row is None:
             return None
         now = self._now()
+        stand_x, stand_y, stand_z, stand_feet_y = self._stand(stand) if stand else (None, None, None, None)
         if target_status == "valid" and stand_status == "valid" and observation_status == "loaded":
             status = "active"
         elif target_status == "invalid":
@@ -731,9 +733,12 @@ class MemoryStore:
                 "UPDATE places SET target_status=?, stand_status=?, observation_status=?, "
                 "status=?, last_verified_at=?, verified_count=verified_count+1, "
                 "confidence=MIN(1.0, confidence+0.05), updated_at=?, "
+                "stand_x=COALESCE(?, stand_x), stand_y=COALESCE(?, stand_y), "
+                "stand_z=COALESCE(?, stand_z), stand_feet_y=COALESCE(?, stand_feet_y), "
                 "world_instance=CASE WHEN world_instance='' AND ?<>'' THEN ? ELSE world_instance END "
                 "WHERE id=?",
                 (target_status, stand_status, observation_status, status, now, now,
+                 stand_x, stand_y, stand_z, stand_feet_y,
                  str(world_instance or ""), str(world_instance or ""), int(row["id"])),
             )
             self._version(int(row["id"]), "verify", actor, note)
@@ -1217,6 +1222,8 @@ class MemoryStore:
             return None, "这个地点尚未验证或已过期，请先复核"
         if row.get("target_status") != "valid" or row.get("stand_status") != "valid":
             return None, "这个地点缺少已验证的目标或站位，不能自动导航"
+        if row.get("stand_x") is None:
+            return None, "这个地点没有记录可站立位置，不能自动导航"
         if row.get("observation_status") != "loaded":
             return None, "这个地点所在区块未加载，不能自动导航"
         if self.is_expired(row):

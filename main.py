@@ -478,6 +478,7 @@ class McBridgePlugin(Star):
         self._shared_memory = None
         self._memory_store = None
         self._memory_world_cache: dict[str, str] = {}
+        self._last_status: dict = {}
         self._closing = False
         self._manual_movement = False
         self._control_epoch = 0
@@ -1457,13 +1458,18 @@ class McBridgePlugin(Star):
             return None
         try:
             baseline = getattr(item, "baseline", {}) or {}
+            last_status = getattr(self, "_last_status", {}) or {}
+            world_key = baseline.get("world_key") or last_status.get("world_key", "")
+            dimension = baseline.get("dimension") or last_status.get("dimension", "")
             scope = self._memory_scope_for({
-                "world_key": baseline.get("world_key", ""),
-                "dimension": baseline.get("dimension", ""),
+                "world_key": world_key,
+                "dimension": dimension,
             })
             scheduled = self._scheduler_for().get(task_id)
             attempts = int(getattr(scheduled, "attempts", 0) or getattr(item, "attempts", 0) or 1)
             position = baseline.get("position") if isinstance(baseline.get("position"), dict) else {}
+            if not position and isinstance(last_status.get("position"), dict):
+                position = dict(last_status["position"])
             target = None
             if str(getattr(item, "kind", "") or "") == "goto":
                 target = {"x": getattr(item, "x", None), "y": getattr(item, "y", None), "z": getattr(item, "z", None)}
@@ -2230,6 +2236,8 @@ class McBridgePlugin(Star):
         except (BridgeError, ConnectionError, RuntimeError, asyncio.TimeoutError) as exc:
             return {"__error__": str(exc) or "客户端动作响应超时"}
         if action == "status" and isinstance(result, dict):
+            if not self._err(result):
+                self._last_status = dict(result)
             self._note_world_status(result)
         return result
 
@@ -3083,7 +3091,7 @@ class McBridgePlugin(Star):
         if action == "agent" and not self.bridge.connected:
             if shared is not None and re.search(r"记得|记忆|回忆|聊过|昨天|前天|忘记", prompt):
                 reply = await self._agent_reply(event, prompt)
-                yield event.plain_result(reply)
+                yield event.plain_result(self._reply_with_place_cards(event, reply))
                 return
             yield event.plain_result("Minecraft 客户端未连接，请先启动游戏客户端")
             return
@@ -3119,7 +3127,7 @@ class McBridgePlugin(Star):
                 return
             if self._is_memory_query(prompt):
                 reply = await self._agent_reply(event, prompt, allow_actions=False)
-                yield event.plain_result(reply)
+                yield event.plain_result(self._reply_with_place_cards(event, reply))
                 return
             control_like = bool(re.search(
                 r"mc_task_cancel|mc_task_status|mc_task_start|mc_brief|任务状态|任务进度|任务队列|终止任务|结束任务|看看状态|查任务",
@@ -3191,7 +3199,7 @@ class McBridgePlugin(Star):
         except Exception as exc:
             logger.warning("[mc-bridge] mc agent failed: %s", exc)
             reply = "MC 请求未完成：" + str(exc)
-        yield event.plain_result(reply)
+        yield event.plain_result(self._reply_with_place_cards(event, reply))
 
     def _tool_denial(self, event, name):
         if name in {"mc_recall_memory", "mc_forget_memory"}:
@@ -3685,9 +3693,14 @@ class McBridgePlugin(Star):
         chain = getattr(result, "chain", None)
         if chain is None:
             return
-        text = "\n".join(str(card) for card in cards if str(card).strip())
-        if text:
-            chain.append(Plain(text="\n" + text[:1200]))
+        unique = []
+        for item in cards:
+            text = item.get("text") if isinstance(item, dict) else item
+            text = str(text or "").strip()
+            if text and text not in unique:
+                unique.append(text)
+        if unique:
+            chain.append(Plain(text="\n" + "\n".join(unique)[:1200]))
 
     @filter.after_message_sent(priority=-9999)
     async def record_mc_delivery(self,event,*_args):
@@ -4684,6 +4697,23 @@ class McBridgePlugin(Star):
             "note": "已走到床边、完成交互并写入 home_bed；服务端重生点提示仍以游戏画面为准",
         }, ensure_ascii=False)
 
+    def _reply_with_place_cards(self, event, reply):
+        getter = getattr(event, "get_extra", None)
+        cards = getter("_mc_place_cards", None) if callable(getter) else None
+        if not cards or self._audience(event) != "owner_private":
+            return reply
+        event.set_extra("_mc_place_cards", [])
+        unique = []
+        for item in cards:
+            text = item.get("text") if isinstance(item, dict) else item
+            text = str(text or "").strip()
+            if text and text not in unique:
+                unique.append(text)
+        if not unique:
+            return reply
+        body = str(reply or "").rstrip()
+        return (body + "\n\n" + "\n".join(unique)[:1200]).strip()
+
     def _queue_place_cards(self, event, rows) -> None:
         if event is None or self._audience(event) != "owner_private":
             return
@@ -4699,11 +4729,26 @@ class McBridgePlugin(Star):
             except Exception:
                 card = ""
             if card:
-                cards.append(card)
+                key = str(row.get("public_ref") or f"{row.get('kind')}:{row.get('key')}")
+                cards.append({"key": key, "text": card})
         if cards:
-            existing = event.get_extra("_mc_place_cards", None)
-            merged = list(existing or []) + cards
-            event.set_extra("_mc_place_cards", merged[:5])
+            existing = event.get_extra("_mc_place_cards", None) or []
+            merged = {}
+            order = []
+            for item in list(existing) + cards:
+                if isinstance(item, dict):
+                    key = str(item.get("key") or item.get("text") or "")
+                    text = str(item.get("text") or "")
+                else:
+                    key = str(item or "")
+                    text = str(item or "")
+                if not text:
+                    continue
+                if key not in merged:
+                    order.append(key)
+                merged[key] = text
+            event.set_extra("_mc_place_cards", [{"key": key, "text": merged[key]}
+                                                 for key in order][:5])
 
     async def _remember_nearby(self, kind: str, key: str, name: str, status: dict):
         queries = {
@@ -4795,12 +4840,14 @@ class McBridgePlugin(Star):
         }.get(str(row.get("kind") or ""))
         target_status = "valid" if block_id and (not expected or expected in block_id) else "invalid"
         stands = [item for item in (context.get("stands") or []) if isinstance(item, dict)]
+        stands.sort(key=lambda item: float(item.get("distance", 999) or 999))
         stand_status = "valid" if stands else "unknown"
         return store.verify_place(
             row["public_ref"], target_status=target_status,
             stand_status=stand_status, observation_status="loaded",
             note=f"block={block_id[:80]}", actor="mc_memory",
             world_instance=scope.get("world_instance", ""),
+            stand=stands[0] if stands else None,
         )
 
     @staticmethod

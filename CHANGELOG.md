@@ -1,6 +1,6 @@
 # Changelog
 
-## 未发布
+## 1.4.0
 
 - 新增本地结构化记忆库 `memory.db`：地点状态机、目标/站位/观察分离、世界实例绑定、旧 `poi_memory.json` 幂等迁移、任务终态事件索引和待同步 outbox。
 - `mc_memory` 改为 `place_ref` 安全视图：模型不再接收精确坐标；精确坐标只在主人私聊由本地事实卡片补充。`mc_goto` 支持 `place_ref` 导航。

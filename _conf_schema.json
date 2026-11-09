@@ -209,5 +209,11 @@
     "type": "string",
     "default": "simple",
     "hint": "simple 只暴露常用入口（推荐）；full 暴露全部73个工具，适合调试。"
+  },
+  "short_task_wait_seconds": {
+    "description": "短任务有界等待秒数",
+    "type": "int",
+    "default": 5,
+    "hint": "0-15；单任务在工具调用内最多等待多久，完成则直接返回结果；0 表示全部异步通知。"
   }
 }

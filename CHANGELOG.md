@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.6
+
+- 单任务 `mc_task_start` 会在 `short_task_wait_seconds`（默认 5 秒）内等待；完成、失败或取消时直接返回 inline 结果，并抑制重复的异步通知。
+- 新增 `short_task_wait_seconds` 配置项，0 表示全部异步通知。
+- 测试基线更新为 341 项。
+
 ## 1.3.5
 
 - `goto` 在普通 Baritone 路线无路时，先尝试客户端短距离碰撞导航，帮助角色从床边等狭窄位置脱困，再进入开门/附近站位回退。

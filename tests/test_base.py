@@ -250,6 +250,56 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         params = p._run_operation.await_args.args[1]
         self.assertEqual((params["x"], params["y"], params["z"]), (-375, 94, -153))
 
+    async def test_task_start_returns_inline_result_for_short_task(self):
+        p = make_plugin()
+        p.config["short_task_wait_seconds"] = 5
+        scheduler = m.UnifiedScheduler()
+        p._scheduler = scheduler
+        scheduled = scheduler.register(kind="skill", goal="inline")
+        scheduler.start(scheduled)
+        scheduler.finish(scheduled, success=True, result={"ok": True}, goal_outcome="fulfilled")
+        p._start_agent_task = AsyncMock(return_value=scheduled.id)
+        payload = json.loads(await p.mc_task_start(Event("mc合成木棍"), "craft",
+                                                   '{"item":"minecraft:stick","count":1}'))
+        self.assertTrue(payload["inline"])
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["result"], {"ok": True})
+        self.assertEqual(payload["goal_outcome"], "fulfilled")
+        self.assertTrue(p._start_agent_task.await_args.kwargs.get("suppress_notify"))
+
+    async def test_task_start_timeout_restores_async_notification(self):
+        p = make_plugin()
+        p.config["short_task_wait_seconds"] = 0.1
+        scheduler = m.UnifiedScheduler()
+        p._scheduler = scheduler
+        item = m.QueuedTask("skill", "slow", target="craft", task_id="task-slow",
+                            suppress_notify=True)
+        scheduler.register(task_id="task-slow", kind="skill", goal="slow", payload=item)
+        p._start_agent_task = AsyncMock(return_value="task-slow")
+        payload = json.loads(await p.mc_task_start(Event("mc合成木棍"), "craft",
+                                                   '{"item":"minecraft:stick","count":1}'))
+        self.assertFalse(payload["inline"])
+        self.assertIn("未在", payload["note"])
+        self.assertFalse(item.suppress_notify)
+
+    async def test_worker_suppresses_inline_completion_notification(self):
+        p = make_plugin()
+        p._record_task_metric = Mock()
+        p._flush_scheduler_audit = Mock()
+        p._task_recovery = SimpleNamespace(discard=Mock(return_value=True))
+        p._task_chat = AsyncMock()
+
+        async def run(*args):
+            return {"skill": "gather", "collected": 1}
+
+        p._skills_for = Mock(return_value=SimpleNamespace(run=run))
+        task = m.QueuedTask("skill", "synthetic", target="gather", suppress_notify=True)
+        p._task_queue.append(task)
+        await p._task_worker()
+        status = p._scheduler_for().task_status(task.task_id)
+        self.assertEqual(status["state"], "completed")
+        p._task_chat.assert_not_awaited()
+
     async def test_goto_falls_back_to_nearby_stand_and_reports_partial(self):
         p = make_plugin()
         p._try_open_nearby_door = AsyncMock(return_value=False)

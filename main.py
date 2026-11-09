@@ -182,6 +182,7 @@ class QueuedTask:
     checkpoint: dict = field(default_factory=dict)
     baseline: dict = field(default_factory=dict)
     group_id: str = ""
+    suppress_notify: bool = False
 
 
 class BridgeServer:
@@ -951,7 +952,7 @@ class McBridgePlugin(Star):
         finally:
             self._preempting = False
 
-    async def _start_agent_task(self, opcode: str, params: dict, priority: int = int(Priority.NORMAL), depends_on: str = "") -> str:
+    async def _start_agent_task(self, opcode: str, params: dict, priority: int = int(Priority.NORMAL), depends_on: str = "", suppress_notify: bool = False) -> str:
         preview = self._agent_task_preview(opcode, params, priority, depends_on)
         scheduler = self._scheduler_for()
         if scheduler.should_preempt(int(preview["priority"]), preview["resources"]):
@@ -981,6 +982,7 @@ class McBridgePlugin(Star):
             max_attempts=1,
             preemptible=bool(preview["preemptible"]),
             group_id=group_id,
+            suppress_notify=bool(suppress_notify),
         )
         if not self._enqueue_tasks([task], priority=int(preview["priority"])):
             raise SkillError("任务队列已满或正在停止")
@@ -1094,6 +1096,27 @@ class McBridgePlugin(Star):
             "warnings": warnings,
             "tasks": len(tasks),
         }
+
+    async def _await_short_task(self, task_id: str, timeout: float):
+        scheduler = self._scheduler_for()
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        terminal = {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}
+        while True:
+            status = scheduler.task_status(str(task_id))
+            if status and status.get("state") in terminal:
+                return status
+            if time.monotonic() >= deadline:
+                return status
+            await asyncio.sleep(0.15)
+
+    def _clear_inline_suppression(self, task_id: str) -> None:
+        try:
+            scheduled = self._scheduler_for().get(str(task_id))
+            item = getattr(scheduled, "payload", None) if scheduled is not None else None
+            if item is not None:
+                item.suppress_notify = False
+        except Exception:
+            pass
 
     def _agent_task_status(self, task_id: str = "", detail: bool = False) -> dict:
         scheduler = self._scheduler_for()
@@ -1534,7 +1557,7 @@ class McBridgePlugin(Star):
                     result = await self._run_with_lease(item, budget)
                     outcome = classify_goal_outcome(result, item.kind)
                     item.goal_outcome = outcome
-                    if item.kind == "skill":
+                    if item.kind == "skill" and not getattr(item, "suppress_notify", False):
                         label = {"fulfilled": "技能完成", "partial": "技能部分完成", "unmet": "技能未达成"}.get(outcome, "技能结束")
                         await self._task_chat(f"{label}（{getattr(item, 'task_id', '')}）：{json.dumps(result, ensure_ascii=False, separators=(',', ':'))}")
                     self._scheduler_for().finish(item, success=True, result=result, goal_outcome=outcome)
@@ -1585,7 +1608,8 @@ class McBridgePlugin(Star):
                     self._scheduler_for().cancel_all("previous task failed; queue cancelled")
                     self._task_queue.clear()
                     await self._call("baritone", {"command": "stop"}, timeout=5)
-                    await self._task_chat(f"任务失败（{getattr(item, 'task_id', '')}），后续队列已停止：{await self._task_error_text(exc)}")
+                    if not getattr(item, "suppress_notify", False):
+                        await self._task_chat(f"任务失败（{getattr(item, 'task_id', '')}），后续队列已停止：{await self._task_error_text(exc)}")
                     for destination in other_routes:
                         await self._task_chat('前一个任务未完成，你的排队任务已取消，请重新下达',route=destination,kind='cancel')
                     break
@@ -2055,7 +2079,7 @@ class McBridgePlugin(Star):
             "explore(goal,max_seconds,max_distance)、return_to(target_pos)、resupply(...)、trade_for(item,count,radius)；"
             "params_json 传 JSON 对象，不确定时先用 dry_run=true 预览。"
             "mc_task_status 查看进度、mc_task_cancel 取消任务。"
-            "任务提交后只回复“已提交/已开始”并结束本轮；完成或失败会主动通知，不要连续轮询。"
+            "任务提交后：如果返回 inline=true，说明短任务已在本次调用内完成，直接汇报结果；否则只回复“已提交/已开始”并结束本轮，完成或失败会主动通知，不要连续轮询。"
             "实际结果以工具返回为准，加入队列不等于完成；低血、敌人靠近或目标不可达时会停止；不要编造没有工具确认的结果。"
         )
         if not allow_actions:
@@ -2604,7 +2628,7 @@ class McBridgePlugin(Star):
                         "明确要求“设重生点”属于已授权动作，不需要再次征求批准；一次不可达时在安全范围内换同一张床的另一半站位或重试一次，仍失败再报告具体原因。"
                         "任务执行中查询进度用 mc_task_status，等待用 mc_wait；这两个工具不会被当前任务阻塞。"
                         "状态/任务/家床一起查优先用 mc_brief，一次拿全，不要分开调用 mc_status + mc_task_status + mc_memory；独立的只读查询可以在同一轮一起发起，但移动/挖掘/放置/停止等有依赖的动作必须等前一个结果。"
-                        "短任务可以用 mc_wait(seconds=3) 等一次；长任务提交后先回复已提交并结束本轮，完成通知会发到会话，不要连续 mc_wait/mc_task_status 轮询。mc_wait 返回的 last 就是最近任务结果。"
+                        "短任务会由 mc_task_start 在 short_task_wait_seconds 内直接返回结果（inline=true）；只有 inline=false 的长任务才回复已提交并等待通知，不要连续 mc_wait/mc_task_status 轮询。mc_wait 仍可用于手动等待。"
                         "主人明确说去某处/下楼/去房间时，先用 mc_status 确认位置（最多一次），然后直接 mc_goto 到已知坐标或记忆坐标；不要为了找路先连续 mc_scan 门/梯子/楼梯，路线由 Baritone 负责。"
                         "路线、门、梯子、楼梯、坐标类问题禁止调用 mc_see；它会被直接拦截并浪费一轮，直接用 mc_scan/mc_block_context。"
                         "说“记下了/记住了”必须对应 mc_set_respawn 或 mc_memory(set) 的写入成功，不能只凭上下文。"
@@ -4607,6 +4631,11 @@ class McBridgePlugin(Star):
             return "params_json 必须是JSON对象"
         if len(json.dumps(params, ensure_ascii=False)) > 4096:
             return "参数过大，拒绝启动"
+        try:
+            wait_seconds = max(0.0, min(15.0, float(self.config.get("short_task_wait_seconds", 5) or 0)))
+        except (TypeError, ValueError):
+            wait_seconds = 5.0
+        inline_wait = wait_seconds > 0 and not depends_on
         intent_info = None
         opcode = str(opcode or "").strip()
         if opcode in {"resume", "recover"}:
@@ -4640,7 +4669,7 @@ class McBridgePlugin(Star):
                 if intent_info is not None:
                     payload["intent"] = intent_info
                 return json.dumps(payload, ensure_ascii=False)
-            task_id = await self._start_agent_task(opcode, params, int(priority), depends_on)
+            task_id = await self._start_agent_task(opcode, params, int(priority), depends_on, suppress_notify=inline_wait)
             if opcode in {"gather", "mine_ore"}:
                 self._remember_gather_resource(params.get("resource", "coal" if opcode == "mine_ore" else "logs"))
         except SkillError as exc:
@@ -4648,6 +4677,26 @@ class McBridgePlugin(Star):
         payload = {"accepted": True, "task_id": task_id, "opcode": opcode, "params": params}
         if intent_info is not None:
             payload["intent"] = intent_info
+        if inline_wait:
+            status = await self._await_short_task(task_id, wait_seconds)
+            terminal = {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}
+            if not (status and status.get("state") in terminal):
+                self._clear_inline_suppression(task_id)
+                status = self._scheduler_for().task_status(task_id)
+            if status and status.get("state") in terminal:
+                state = str(status.get("state") or "")
+                payload.update({
+                    "inline": True,
+                    "status": state,
+                    "goal_outcome": status.get("goal_outcome", ""),
+                    "result": status.get("result"),
+                    "error": status.get("error", ""),
+                    "note": "短任务已在本次调用内完成" if state == TaskState.COMPLETED else (
+                        "短任务已在本次调用内失败" if state == TaskState.FAILED else "短任务已在本次调用内取消"),
+                })
+            else:
+                payload["inline"] = False
+                payload["note"] = f"短任务未在 {wait_seconds:g} 秒内完成，完成后会异步通知"
         return json.dumps(payload, ensure_ascii=False)
 
     @filter.llm_tool(name="mc_task_status")

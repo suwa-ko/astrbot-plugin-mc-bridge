@@ -235,6 +235,15 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cards)
         self.assertIn("-375", "\n".join(cards))
 
+    async def test_mc_memory_can_read_saved_places_while_game_offline(self):
+        self.remember()
+        self.plugin._call = AsyncMock(return_value={"__error__": "not connected"})
+        event = Event("MC家床在哪")
+        result = json.loads(await self.plugin.mc_memory(event, operation="get", kind="home_bed"))
+        self.assertTrue(result["found"])
+        self.assertTrue(result["offline"])
+        self.assertIn("-375", "\n".join(event.get_extra("_mc_place_cards") or []))
+
     async def test_group_memory_only_returns_shared_projection(self):
         self.plugin.config["shared_memory_group_whitelist"] = "111"
         self.remember(kind="home_bed", key="main", privacy="owner_only")

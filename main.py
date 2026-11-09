@@ -3209,7 +3209,7 @@ class McBridgePlugin(Star):
         recall_question = bool(re.search(r'(?:记得|回忆|聊过|上次|之前|昨天|前天).{0,48}(?:吗|什么|怎么|多少|哪|是否|[?？])', text))
         if name not in {"mc_status", "mc_look", "mc_see", "mc_screenshot", "mc_memory", "mc_brief", "mc_recall_memory", "mc_task_status", "mc_capabilities"} and event is not None and self._is_memory_query(text) and (not action_intent(text) or recall_question):
             return "本轮是回忆，不执行新的游戏动作"
-        if not self.bridge.connected and name not in {"mc_stop", "mc_status", "mc_screenshot", "mc_see"}:
+        if not self.bridge.connected and name not in {"mc_stop", "mc_status", "mc_screenshot", "mc_see", "mc_memory", "mc_recall_memory"}:
             return "Minecraft 客户端未连接，未执行"
         epoch = CONTROL_EPOCH.get()
         if epoch is not None and epoch != self._control_epoch:
@@ -4892,9 +4892,13 @@ class McBridgePlugin(Star):
             store = self._memory_store_for()
             status = await self._call("status", timeout=10)
             err = self._err(status)
-            if err:
+            if err and operation in {"remember", "verify", "bind_world"}:
                 return err
-            scope = self._memory_scope_for(status)
+            offline = bool(err)
+            if offline:
+                scope = {"world_key": "", "world_instance": "", "dimension": ""}
+            else:
+                scope = self._memory_scope_for(status)
 
             def find_row():
                 if place_ref:
@@ -4929,7 +4933,10 @@ class McBridgePlugin(Star):
                 items = [store.safe_view(row, audience=audience) for row in rows]
                 return json.dumps({
                     "found": bool(items), "items": items,
-                    "note": "精确坐标不会进入模型；主人私聊会由本地卡片补充坐标。",
+                    "offline": offline,
+                    "note": ("游戏未连接，按最近保存的地点查询；精确坐标只在主人私聊由本地卡片补充。"
+                             if offline else
+                             "精确坐标不会进入模型；主人私聊会由本地卡片补充坐标。"),
                 }, ensure_ascii=False)
 
             if operation == "history":
@@ -4954,6 +4961,7 @@ class McBridgePlugin(Star):
                     return json.dumps({"found": False, "note": "没有这个地点记录，不要编造坐标"}, ensure_ascii=False)
                 self._queue_place_cards(event, [row])
                 return json.dumps({"found": True, "item": store.safe_view(row, audience=audience),
+                                   "offline": offline,
                                    "note": "精确坐标由本地卡片补充，不要自己编造。"}, ensure_ascii=False)
 
             if operation == "forget":

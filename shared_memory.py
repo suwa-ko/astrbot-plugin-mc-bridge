@@ -388,7 +388,7 @@ class McSharedMemory:
         never sends it to embedding or rerank.  Date-query output is redacted by
         ``memory_safe_text`` before it reaches a model.
         """
-        setting = f"native_redaction_v1:{self.scope}:{self.persona}"
+        setting = f"native_redaction_v2:{self.scope}:{self.persona}"
         cursor = await self.db.execute("SELECT value FROM settings WHERE key=?", (setting,))
         if await cursor.fetchone():
             self._legacy_redaction_done = True
@@ -401,25 +401,58 @@ class McSharedMemory:
             "AND json_extract(metadata,'$.persona_id')=?",
             (self.scope, self.persona))
         changed = 0
+        graph_db = None
+        try:
+            star = self.context.get_registered_star("astrbot_plugin_livingmemory")
+            data_dir = Path(getattr(getattr(star, "star_cls", None), "initializer", None).data_dir) if star else None
+            graph_path = Path(data_dir) / "livingmemory_graph_documents.db" if data_dir else None
+            if graph_path is not None and graph_path.exists():
+                graph_db = await aiosqlite.connect(graph_path)
+        except Exception:
+            graph_db = None
         for identifier, text, raw_meta in await cursor.fetchall():
             try:
                 meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta or {})
             except Exception:
                 meta = {}
             source_kind = str(meta.get("source_kind") or "")
-            dirty = (contains_coordinate(text) or has_world_identifier(text)
-                     or source_kind.startswith("qq"))
-            if not dirty or str(meta.get("status") or "active") == "redacted":
+            status = str(meta.get("status") or "active")
+            qq_raw = (source_kind.startswith("qq")
+                      and "已脱敏" not in text
+                      and not text.startswith("旧QQ私聊MC记忆摘要"))
+            dirty = (contains_coordinate(text) or has_world_identifier(text) or qq_raw)
+            if not dirty and status != "redacted":
                 continue
-            meta["model_safe"] = False
-            meta["status"] = "redacted"
-            meta["redacted_at"] = time.time()
-            meta["redaction_reason"] = "legacy_coordinate_or_private_chat"
+            if dirty:
+                meta["model_safe"] = False
+                meta["status"] = "redacted"
+                meta["redacted_at"] = time.time()
+                meta["redaction_reason"] = "legacy_coordinate_or_private_chat"
+            safe_text = memory_safe_text(text, source_kind=source_kind,
+                                         world_keys=self.known_world_keys)
+            if not safe_text:
+                safe_text = "旧MC记忆（已脱敏）"
+            if status == "redacted" and safe_text == text and not dirty:
+                continue
             await engine.db_connection.execute(
-                "UPDATE documents SET metadata=? WHERE id=?",
-                (json.dumps(meta, ensure_ascii=False), identifier))
+                "UPDATE documents SET text=?, metadata=? WHERE id=?",
+                (safe_text, json.dumps(meta, ensure_ascii=False), identifier))
+            if graph_db is not None:
+                try:
+                    await graph_db.execute(
+                        "UPDATE documents SET text=?, metadata=?, updated_at=CURRENT_TIMESTAMP "
+                        "WHERE doc_id=?",
+                        (safe_text, json.dumps(meta, ensure_ascii=False), str(identifier)))
+                except Exception:
+                    pass
             changed += 1
         await engine.db_connection.commit()
+        if graph_db is not None:
+            try:
+                await graph_db.commit()
+                await graph_db.close()
+            except Exception:
+                pass
         await self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,'done')", (setting,))
         await self.db.commit()
         self._legacy_redaction_done = True

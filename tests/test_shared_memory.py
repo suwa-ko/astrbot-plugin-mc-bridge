@@ -231,6 +231,21 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         stored = json.loads((await cursor.fetchone())[0])
         self.assertEqual(stored["status"], "redacted")
 
+    async def test_new_sanitized_private_digest_is_not_marked_redacted(self):
+        meta = {
+            "mc_shared": True, "owner_qq": self.service.owner,
+            "session_id": self.service.scope, "persona_id": "MinecraftBot",
+            "source_kind": "qq_mc_dialogue", "source_platform": "qq",
+            "occurred_at": time.time(), "status": "active",
+        }
+        await self.native.execute("INSERT INTO documents(text,metadata) VALUES(?,?)",
+                                  ("主人在QQ私聊中提到了MC建造话题（原文已脱敏）", json.dumps(meta)))
+        await self.native.commit()
+        await self.service._redact_legacy_native()
+        cursor = await self.native.execute("SELECT metadata FROM documents")
+        stored = json.loads((await cursor.fetchone())[0])
+        self.assertEqual(stored["status"], "active")
+
     async def test_group_recall_is_read_only_and_isolated(self):
         self.service.config["shared_memory_group_whitelist"] = "111,222"
         now = time.time()

@@ -138,6 +138,18 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         await p.filter_mc_tools(event, request)
         self.assertEqual([t.name for t in request.func_tool.tools], ["mc_goto", "mc_brief", "other"])
 
+    async def test_other_admin_qq_cannot_use_owner_private_memory(self):
+        p = make_plugin()
+        p.config["shared_memory_owner_qq"] = "123"
+        event = Event("MC家床在哪")
+        event.get_sender_id = lambda: "999"
+        self.assertIn("只有主人", p._tool_denial(event, "mc_memory"))
+        self.assertIn("只有主人", p._tool_denial(event, "mc_goto"))
+        owner = Event("MC家床在哪")
+        owner.get_sender_id = lambda: "123"
+        self.assertIsNone(p._tool_denial(owner, "mc_memory"))
+        self.assertIsNone(p._tool_denial(owner, "mc_goto"))
+
     async def test_whitelisted_group_is_read_only(self):
         p = make_plugin()
         p.config["shared_memory_group_whitelist"] = "111"

@@ -1316,6 +1316,33 @@ class McBridgePlugin(Star):
             values = [item.strip() for item in re.split(r"[,，;\s]+", str(raw)) if item.strip()]
         return {item for item in values if item}
 
+    def _owner_private(self, event) -> bool:
+        if event is None:
+            return False
+        try:
+            platform = event.get_platform_name()
+            private = event.is_private_chat()
+        except Exception:
+            return False
+        if platform == "aiocqhttp" and private:
+            owner_qq = str(self.config.get("shared_memory_owner_qq", "")).strip()
+            try:
+                sender = str(event.get_sender_id())
+            except Exception:
+                sender = ""
+            if owner_qq:
+                return bool(sender) and sender == owner_qq
+            try:
+                return bool(event.is_admin())
+            except Exception:
+                return False
+        if platform == "webchat" and private:
+            try:
+                return bool(event.is_admin())
+            except Exception:
+                return False
+        return False
+
     def _audience(self, event) -> str:
         """Return the effective destination, not just the speaker identity."""
         if event is None:
@@ -1331,7 +1358,7 @@ class McBridgePlugin(Star):
                 return "public_mc"
             return "unknown"
         if platform in {"aiocqhttp", "webchat"} and private:
-            return "owner_private"
+            return "owner_private" if self._owner_private(event) else "unknown"
         if platform == "aiocqhttp" and not private:
             try:
                 target = str(event.unified_msg_origin)
@@ -3224,6 +3251,15 @@ class McBridgePlugin(Star):
             return "白名单群为永久只读：只能查询共享状态和记忆，不能写入或控制游戏"
         if platform not in {"aiocqhttp", "webchat"} or not private:
             return "Minecraft 工具仅在授权私聊或可信游戏会话中使用，未执行"
+        if platform == "aiocqhttp":
+            owner_qq = str(self.config.get("shared_memory_owner_qq", "")).strip()
+            if owner_qq:
+                try:
+                    sender = str(event.get_sender_id())
+                except Exception:
+                    sender = ""
+                if sender != owner_qq:
+                    return "只有主人 QQ 私聊能控制 Minecraft 机器人，未执行"
         if self.config.get("qq_admin_only", True) and not event.is_admin():
             return "只有主人能控制 Minecraft 机器人，未执行"
         text = str(getattr(event, "message_str", ""))

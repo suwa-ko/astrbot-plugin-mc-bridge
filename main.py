@@ -1549,6 +1549,10 @@ class McBridgePlugin(Star):
                     }
                     self._record_task_metric(item, "completed", started, result=result, goal_outcome=outcome)
                     self._flush_scheduler_audit()
+                    try:
+                        self._task_recovery_for().discard(str(getattr(item, "task_id", "") or ""))
+                    except Exception:
+                        pass
                 except asyncio.CancelledError:
                     self._record_task_metric(item, "cancelled", started, error="task cancelled", goal_outcome="unknown")
                     self._last_task_result = {

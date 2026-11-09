@@ -255,6 +255,7 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         p = make_plugin()
         p._record_task_metric = Mock()
         p._flush_scheduler_audit = Mock()
+        p._task_recovery = SimpleNamespace(discard=Mock(return_value=True))
         p._task_chat = AsyncMock()
 
         async def run(*args):
@@ -267,6 +268,7 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         status = p._scheduler_for().task_status(task.task_id)
         self.assertEqual(status["state"], "completed")
         self.assertEqual(status["goal_outcome"], "partial")
+        p._task_recovery.discard.assert_called_once_with(task.task_id)
 
     async def test_queue_skill_uses_contract_budget(self):
         p = make_plugin()

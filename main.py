@@ -1479,6 +1479,17 @@ class McBridgePlugin(Star):
                 "cancelled": "task_cancelled",
             }.get(status, "task_completed")
             error_code = type(error).__name__ if not isinstance(error, str) and error else str(error or "")[:80]
+            summary = self._task_result_summary(result)
+            try:
+                place_ref = str((getattr(item, "params", {}) or {}).get("place_ref") or "")
+                if place_ref:
+                    place = store.get_place(place_ref)
+                    if place:
+                        label = store.safe_view(place, audience="owner_private").get("label")
+                        if label:
+                            summary = f"到达 {label}；{summary}" if summary else f"到达 {label}"
+            except Exception:
+                pass
             store.record_task_event(
                 task_id=task_id,
                 run_id=str(attempts),
@@ -1495,7 +1506,7 @@ class McBridgePlugin(Star):
                 confirmed_count=self._confirmed_count(result),
                 error_code=error_code,
                 error=str(error or ""),
-                result_summary=self._task_result_summary(result),
+                result_summary=summary,
                 observation_scope="task_worker",
                 source="task_worker",
             )

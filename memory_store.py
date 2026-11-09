@@ -108,11 +108,15 @@ class MemoryStore:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA busy_timeout=5000")
         self._ensure_schema()
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        self._secure_files()
         self._world_cache: dict[str, str] = {}
+
+    def _secure_files(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.chmod(str(self.path) + suffix, 0o600)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------ schema
     def _ensure_schema(self):

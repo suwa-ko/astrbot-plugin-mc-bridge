@@ -259,6 +259,11 @@ class McSharedMemory:
         await self.db.execute("CREATE TABLE IF NOT EXISTS outbox (key TEXT PRIMARY KEY, content TEXT NOT NULL, metadata TEXT NOT NULL, created REAL NOT NULL, state TEXT NOT NULL DEFAULT 'pending', memory_id INTEGER)")
         await self.db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         await self.db.commit()
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                Path(str(path) + suffix).chmod(0o600)
+            except OSError:
+                pass
         self.task = asyncio.create_task(self._loop())
 
     async def stop(self):

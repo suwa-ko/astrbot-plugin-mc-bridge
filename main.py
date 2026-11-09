@@ -1704,6 +1704,21 @@ class McBridgePlugin(Star):
             if not no_path(exc):
                 raise
 
+        if not explicit:
+            if await self._try_step_off_bed():
+                try:
+                    await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=False)
+                    await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
+                    return {"goal_outcome": "fulfilled", "target": target}
+                except BridgeError as exc:
+                    last_error = exc
+            try:
+                if await self._try_navigate(item.x, item.y, item.z, 30):
+                    await self._task_chat(f"到了 {item.x} {item.y} {item.z}")
+                    return {"goal_outcome": "fulfilled", "target": target}
+            except BridgeError:
+                pass
+
         if await self._try_open_nearby_door():
             try:
                 await self._move_and_wait(item.x, item.y, item.z, 120, allow_break=False)
@@ -3035,6 +3050,109 @@ class McBridgePlugin(Star):
             return min(max(1, int(policy.per_action)), max(0, int(policy.remaining_task_budget())))
         except Exception:
             return 0
+
+    async def _try_step_off_bed(self) -> bool:
+        """Step off a bed to nearby ground before retrying a blocked route."""
+        import math
+        try:
+            status = await self._call("status", timeout=8)
+            if self._err(status):
+                return False
+            pos = status.get("position") or {}
+            x = int(math.floor(float(pos.get("x"))))
+            y = int(math.floor(float(pos.get("y"))))
+            z = int(math.floor(float(pos.get("z"))))
+            context = await self._call("block_context", {"x": x, "y": y, "z": z}, timeout=8)
+            if self._err(context) or not str(context.get("block") or "").endswith("_bed"):
+                return False
+            candidates = []
+            for dx in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for dy in (0, -1):
+                        if dx == 0 and dy == 0 and dz == 0:
+                            continue
+                        cell = (x + dx, y + dy, z + dz)
+                        nearby = await self._call(
+                            "block_context",
+                            {"x": cell[0], "y": cell[1], "z": cell[2]},
+                            timeout=6,
+                        )
+                        if self._err(nearby):
+                            continue
+                        block = str(nearby.get("block") or "")
+                        if nearby.get("standable") and not block.endswith("_bed") and cell not in candidates:
+                            candidates.append(cell)
+                        for row in nearby.get("stands") or []:
+                            if not isinstance(row, dict):
+                                continue
+                            try:
+                                candidate = (
+                                    int(row["x"]),
+                                    int(round(float(row.get("feet_y", row.get("y", cell[1]))))),
+                                    int(row["z"]),
+                                )
+                            except (KeyError, TypeError, ValueError):
+                                continue
+                            if candidate != (x, y, z) and candidate not in candidates:
+                                candidates.append(candidate)
+            if not candidates:
+                return False
+            valid = []
+            for cell in candidates:
+                check = await self._call(
+                    "block_context",
+                    {"x": cell[0], "y": cell[1], "z": cell[2]},
+                    timeout=6,
+                )
+                if self._err(check):
+                    continue
+                if str(check.get("block") or "").endswith("_bed"):
+                    continue
+                if not check.get("standable"):
+                    continue
+                valid.append(cell)
+            if not valid:
+                return False
+            ordered = sorted(
+                valid,
+                key=lambda cell: (cell[0] - x) ** 2 + (cell[1] - y) ** 2 + (cell[2] - z) ** 2,
+            )
+            for gx, gy, gz in ordered:
+                try:
+                    await self._run_operation("align", {"x": gx, "y": gy, "z": gz}, seconds=6)
+                except Exception:
+                    continue
+                check_status = await self._call("status", timeout=8)
+                if self._err(check_status):
+                    continue
+                current = check_status.get("position") or {}
+                try:
+                    bx = int(math.floor(float(current.get("x"))))
+                    by = int(math.floor(float(current.get("y"))))
+                    bz = int(math.floor(float(current.get("z"))))
+                except (TypeError, ValueError):
+                    continue
+                check = await self._call("block_context", {"x": bx, "y": by, "z": bz}, timeout=6)
+                if self._err(check):
+                    continue
+                if not str(check.get("block") or "").endswith("_bed"):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    async def _try_navigate(self, x, y, z, seconds=30) -> bool:
+        """Try the client's collision-aware navigation for a short target."""
+        import math
+        result = await self._call(
+            "navigate",
+            {"x": math.floor(x), "y": math.floor(y), "z": math.floor(z), "allow_break": False},
+            timeout=10,
+        )
+        if self._err(result):
+            return False
+        await self._wait_arrival(x, y, z, seconds, allow_ladder_assist=True)
+        return True
 
     async def _move_and_wait(self, x, y, z, seconds, allow_break=False):
         import math

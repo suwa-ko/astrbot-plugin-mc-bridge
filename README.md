@@ -160,7 +160,7 @@ cd mod
 ./gradlew assemble bridgeRegression navigationRegression survivalRegression
 ```
 
-当前基线：Python 335 项测试；Java survival / navigation / bridge 回归。
+当前基线：Python 338 项测试；Java survival / navigation / bridge 回归。
 
 ## 已知限制
 

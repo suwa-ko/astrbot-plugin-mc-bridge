@@ -197,6 +197,59 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(p._move_and_wait.await_args_list[0].kwargs.get("allow_break"))
         self.assertTrue(any("不自动挖方块" in c.args[0] for c in p._task_chat.await_args_list))
 
+    async def test_goto_no_path_tries_collision_navigation_before_door(self):
+        p = make_plugin()
+        p._try_open_nearby_door = AsyncMock(return_value=False)
+        p._move_and_wait = AsyncMock(side_effect=m.BridgeError("客户端确认当前路线无路，已停止，不再等到超时"))
+        p._try_navigate = AsyncMock(return_value=True)
+        result = await p._run_goto_task(m.QueuedTask("goto", "go", x=1, y=64, z=2))
+        self.assertEqual(result["goal_outcome"], "fulfilled")
+        p._try_navigate.assert_awaited_once()
+        p._try_open_nearby_door.assert_not_awaited()
+
+    async def test_try_navigate_uses_non_breaking_navigate_action(self):
+        p = make_plugin()
+        p.bridge.client_info = {"protocol": 3}
+        p._wait_arrival = AsyncMock(return_value=None)
+        p.bridge.call.return_value = {}
+        self.assertTrue(await p._try_navigate(1, 64, 2, 10))
+        call = p.bridge.call.await_args_list[0]
+        self.assertEqual(call.args[0], "navigate")
+        self.assertFalse(call.args[1]["allow_break"])
+        p._wait_arrival.assert_awaited_once()
+
+    async def test_try_step_off_bed_aligns_to_nearby_ground(self):
+        p = make_plugin()
+        p.bridge.client_info = {"protocol": 3, "capabilities": "block_context"}
+        position = {"x": -375.5, "y": 94.6, "z": -154.5}
+        async def call(action, params=None, timeout=20):
+            params = params or {}
+            if action == "status":
+                return {"position": dict(position)}
+            if action == "block_context":
+                cell = (params.get("x"), params.get("y"), params.get("z"))
+                if cell == (-375, 94, -154):
+                    return {"block": "minecraft:white_bed", "standable": True, "stands": [
+                        {"x": -376, "y": 94, "z": -154, "feet_y": 94, "distance": 1.0},
+                        {"x": -375, "y": 94, "z": -153, "feet_y": 94, "distance": 1.5},
+                    ]}
+                if cell == (-376, 94, -154):
+                    return {"block": "minecraft:red_bed", "standable": True, "stands": []}
+                if cell == (-375, 94, -153):
+                    return {"block": "minecraft:air", "standable": True, "stands": []}
+                return {"block": "minecraft:red_bed", "stands": []}
+            return {}
+        p.bridge.call.side_effect = call
+        def align(action, params=None, seconds=0, **kwargs):
+            params = params or {}
+            position.update({"x": params["x"] + 0.5, "y": params["y"], "z": params["z"] + 0.5})
+            return {"phase": "completed"}
+        p._run_operation = AsyncMock(side_effect=align)
+        self.assertTrue(await p._try_step_off_bed())
+        self.assertEqual(p._run_operation.await_count, 1)
+        params = p._run_operation.await_args.args[1]
+        self.assertEqual((params["x"], params["y"], params["z"]), (-375, 94, -153))
+
     async def test_goto_falls_back_to_nearby_stand_and_reports_partial(self):
         p = make_plugin()
         p._try_open_nearby_door = AsyncMock(return_value=False)

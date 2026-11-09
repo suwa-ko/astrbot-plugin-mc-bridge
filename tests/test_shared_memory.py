@@ -142,7 +142,9 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         await self.service.capture_qq(event, "MC家可以建在山上。我的邮箱是secret@example.com")
         await self.service.flush()
         content = self.engine.add_memory.await_args.args[0]
-        self.assertIn("MC家建在山上", content)
+        self.assertIn("MC", content)
+        self.assertIn("建造", content)
+        self.assertNotIn("MC家建在山上", content)
         self.assertNotIn("成绩", content)
         self.assertNotIn("验证码", content)
         self.assertNotIn("secret", content)
@@ -152,6 +154,124 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.service.prepare_qq(event)
         await self.service.capture_qq(event)
         self.engine.add_memory.assert_not_awaited()
+
+    async def test_embedding_content_redacts_coordinates_and_world_key(self):
+        event = self.game_event()
+        await self.service.capture_game(
+            event, self.bridge,
+            "MC家床坐标是 -375 94 -154，world_key=abc123", "到了家床 -375 94 -154")
+        await self.service.flush()
+        content = self.engine.add_memory.await_args.args[0]
+        self.assertNotIn("-375", content)
+        self.assertNotIn("-154", content)
+        self.assertNotIn("abc123", content)
+        self.assertIn("[坐标]", content)
+
+    async def test_old_document_result_is_redacted_before_context(self):
+        meta = {
+            "mc_shared": True, "owner_qq": self.service.owner,
+            "session_id": self.service.scope, "persona_id": "MinecraftBot",
+            "source_kind": "game_event", "source_platform": "minecraft",
+            "occurred_at": time.time(), "status": "active",
+        }
+        await self.native.execute(
+            "INSERT INTO documents(text,metadata) VALUES(?,?)",
+            ("MC家床在 -375 94 -154，world_key=abc123", json.dumps(meta)))
+        await self.native.commit()
+        result = await self.service.recall(self.game_event(), self.bridge, "MC家床")
+        self.assertNotIn("-375", result)
+        self.assertNotIn("-154", result)
+        self.assertNotIn("abc123", result)
+        self.assertIn("[坐标]", result)
+
+    async def test_private_digest_is_not_verbatim_private_chat(self):
+        event = Event("MC家建在山上，验证码是998877")
+        self.service.prepare_qq(event)
+        await self.service.capture_qq(event, "MC家可以建在山上")
+        await self.service.flush()
+        content = self.engine.add_memory.await_args.args[0]
+        self.assertNotIn("MC家建在山上", content)
+        self.assertNotIn("998877", content)
+        self.assertIn("建造", content)
+
+    async def test_legacy_documents_with_coordinates_are_marked_redacted(self):
+        meta = {
+            "mc_shared": True, "owner_qq": self.service.owner,
+            "session_id": self.service.scope, "persona_id": "MinecraftBot",
+            "source_kind": "game_event", "source_platform": "minecraft",
+            "occurred_at": time.time() - 86400, "status": "active",
+        }
+        await self.native.execute("INSERT INTO documents(text,metadata) VALUES(?,?)",
+                                  ("MC家床 -375 94 -154", json.dumps(meta)))
+        await self.native.commit()
+        await self.service._redact_legacy_native()
+        cursor = await self.native.execute("SELECT metadata FROM documents")
+        stored = json.loads((await cursor.fetchone())[0])
+        self.assertEqual(stored["status"], "redacted")
+        self.assertFalse(stored["model_safe"])
+        self.assertIn("redaction_reason", stored)
+        # A date query may still read the local record, but the model-facing
+        # output must be redacted.
+        result = await self.service.recall(Event("昨天MC做了什么"), self.bridge, "MC", "昨天")
+        self.assertNotIn("-375", result)
+        self.assertIn("[坐标]", result)
+
+    async def test_legacy_private_chat_documents_are_marked_redacted(self):
+        meta = {
+            "mc_shared": True, "owner_qq": self.service.owner,
+            "session_id": self.service.scope, "persona_id": "MinecraftBot",
+            "source_kind": "qq_mc_dialogue", "source_platform": "qq",
+            "occurred_at": time.time(), "status": "active",
+        }
+        await self.native.execute("INSERT INTO documents(text,metadata) VALUES(?,?)",
+                                  ("主人在QQ私聊中说了秘密内容", json.dumps(meta)))
+        await self.native.commit()
+        await self.service._redact_legacy_native()
+        cursor = await self.native.execute("SELECT metadata FROM documents")
+        stored = json.loads((await cursor.fetchone())[0])
+        self.assertEqual(stored["status"], "redacted")
+
+    async def test_group_recall_is_read_only_and_isolated(self):
+        self.service.config["shared_memory_group_whitelist"] = "111,222"
+        now = time.time()
+        def doc(text, scope, visibility, source="task_terminal"):
+            return (text, json.dumps({
+                "mc_shared": True, "owner_qq": self.service.owner,
+                "session_id": scope, "persona_id": "MinecraftBot",
+                "visibility": visibility, "source_kind": source,
+                "source_platform": "minecraft", "occurred_at": now, "status": "active",
+            }))
+        rows = [
+            doc("OWNER-SECRET", self.service.scope, "owner_private"),
+            doc("SHARED-INFO", self.service.shared_scope, "group_shared"),
+            doc("NOT-SHARED", self.service.shared_scope, "owner_private"),
+            doc("G111-INFO", self.service.group_scope("111"), "group_only:111"),
+            doc("G222-INFO", self.service.group_scope("222"), "group_only:222"),
+            doc("SHARED-COORD -375 94 -154", self.service.shared_scope, "group_shared"),
+        ]
+        await self.native.executemany("INSERT INTO documents(text,metadata) VALUES(?,?)", rows)
+        await self.native.commit()
+        event = Event(private=False)
+        event.unified_msg_origin = "default:GroupMessage:111"
+        result = await self.service.group_recall(event, self.bridge, "111", "MC")
+        self.assertIn("SHARED-INFO", result)
+        self.assertIn("G111-INFO", result)
+        self.assertNotIn("OWNER-SECRET", result)
+        self.assertNotIn("NOT-SHARED", result)
+        self.assertNotIn("G222-INFO", result)
+        self.assertNotIn("-375", result)
+        event.unified_msg_origin = "default:GroupMessage:333"
+        self.assertIn("没有开放", await self.service.group_recall(event, self.bridge, "333", "MC"))
+
+    async def test_group_recall_sanitizes_search_query(self):
+        self.service.config["shared_memory_group_whitelist"] = "111"
+        event = Event(private=False)
+        event.unified_msg_origin = "default:GroupMessage:111"
+        await self.service.group_recall(event, self.bridge, "111", "MC家床 -375 94 -154 world_key=abc123")
+        for call in self.engine.search_memories.await_args_list:
+            query = call.args[0] if call.args else call.kwargs.get("query", "")
+            self.assertNotIn("-375", query)
+            self.assertNotIn("abc123", query)
 
     async def test_sensitive_query_does_not_touch_native_memory(self):
         result = await self.service.recall(self.game_event(), self.bridge, "我的成绩")

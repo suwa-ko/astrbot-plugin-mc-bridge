@@ -1413,6 +1413,8 @@ class VanillaSkills:
                     "skill": "sleep_at",
                     "sleeping": True,
                     "bed": {"x": x, "y": y, "z": z},
+                    "stand": {"x": stand["x"], "y": stand.get("feet_y", stand["y"]),
+                              "z": stand["z"], "feet_y": stand.get("feet_y", stand["y"])},
                     "world_key": str(status.get("world_key") or ""),
                     "dimension": str(status.get("dimension") or ""),
                 }
@@ -1424,15 +1426,28 @@ class VanillaSkills:
         source = str(source or "nearby").strip().lower()
         memory = self._memory()
         if source in {"home", "home_bed", "家", "家床"}:
-            row = memory.get("home_bed", str(key or "main")) if memory is not None else None
-            if not row:
-                raise SkillError("没有记录家床")
             status = await self.status()
-            if row.get("world_key") and row.get("world_key") != status.get("world_key"):
-                raise SkillError("家床记录属于另一个世界")
-            if row.get("dimension") and row.get("dimension") != status.get("dimension"):
-                raise SkillError("家床记录属于另一个维度")
-            result = await self.sleep_at(row["x"], row["y"], row["z"])
+            store = getattr(self.plugin, "_memory_store", None)
+            row = None
+            target = None
+            if store is not None:
+                scope = self.plugin._memory_scope_for(status)
+                place = store.latest_place(**scope, kind="home_bed", key=str(key or "main"))
+                if place:
+                    local = store.local_view(place)
+                    target = local.get("target")
+                    row = place
+            if target is None:
+                legacy = memory.get("home_bed", str(key or "main")) if memory is not None else None
+                if legacy:
+                    if legacy.get("world_key") and legacy.get("world_key") != status.get("world_key"):
+                        raise SkillError("家床记录属于另一个世界")
+                    if legacy.get("dimension") and legacy.get("dimension") != status.get("dimension"):
+                        raise SkillError("家床记录属于另一个维度")
+                    target = legacy
+            if not target:
+                raise SkillError("没有记录家床")
+            result = await self.sleep_at(target["x"], target["y"], target["z"])
             result.update({"source": "home_bed", "key": str(key or "main")})
             return result
 
@@ -1459,6 +1474,14 @@ class VanillaSkills:
                     x=result["bed"]["x"], y=result["bed"]["y"], z=result["bed"]["z"],
                 )
                 remembered = True
+            helper = getattr(self.plugin, "_remember_home_bed", None)
+            if remember and helper is not None:
+                try:
+                    place = helper(result, result.get("bed"), result.get("stand"),
+                                   source="task_result", notes="skill find_and_sleep")
+                    remembered = remembered or place is not None
+                except Exception:
+                    pass
             result.update({"source": "nearby", "remembered": remembered, "key": str(key or "main")})
             return result
         raise SkillError("附近没有可用床：" + "；".join(failures[:3]))

@@ -114,11 +114,14 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 | `host` / `port` / `path` | WebSocket 监听地址，默认 `0.0.0.0:8766/ws` |
 | `mc_provider_id` | 执行 Minecraft 任务使用的模型 |
 | `owner_name` | 默认主人游戏名 |
-| `game_allowed_players` | 允许通过游戏聊天指挥机器人的玩家 |
+| `game_allowed_players` | 允许在游戏公共聊天使用只读状态查询的玩家；动作和私有记忆仍需主人私聊 |
 | `game_chat_names` | 游戏内唤醒机器人的名字 |
 | `auto_survive` | 是否启用低血/危险自动反应 |
 | `tool_profile` | `simple` 只暴露常用入口（默认）；`full` 暴露全部工具，适合调试 |
 | `shared_memory_enabled` | 是否允许读取主人授权的 MC 相关聊天记忆 |
+| `shared_memory_group_whitelist` | 允许读取群共享记忆的群号，逗号分隔；留空不开放 |
+
+记忆边界：地点坐标由本地 `memory.db` 保存，模型只看到 `place_ref`；精确坐标只在主人私聊由本地卡片显示。LivingMemory、嵌入、重排和旧文档检索使用脱敏内容。白名单群永久只读，只能看主人标记为 `group_shared` 或本群专属的地点，不能写入记忆或控制游戏。
 
 ## 兼容性
 

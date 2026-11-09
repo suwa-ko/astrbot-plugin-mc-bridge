@@ -138,6 +138,24 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         await p.filter_mc_tools(event, request)
         self.assertEqual([t.name for t in request.func_tool.tools], ["mc_goto", "mc_brief", "other"])
 
+    async def test_whitelisted_group_is_read_only(self):
+        p = make_plugin()
+        p.config["shared_memory_group_whitelist"] = "111"
+        event = Event("MC家床在哪", private=False)
+        event.unified_msg_origin = "default:GroupMessage:111"
+        self.assertIsNone(p._tool_denial(event, "mc_memory"))
+        self.assertIsNone(p._tool_denial(event, "mc_brief"))
+        self.assertIsNone(p._tool_denial(event, "mc_task_status"))
+        self.assertIn("只读", p._tool_denial(event, "mc_goto"))
+        self.assertIn("只读", p._tool_denial(event, "mc_task_start"))
+
+    async def test_non_whitelisted_group_cannot_read_memory(self):
+        p = make_plugin()
+        p.config["shared_memory_group_whitelist"] = "111"
+        event = Event("MC家床在哪", private=False)
+        event.unified_msg_origin = "default:GroupMessage:222"
+        self.assertIn("没有开放", p._tool_denial(event, "mc_memory"))
+
     async def test_stopped_event_cannot_restart_movement(self):
         p = make_plugin()
         p._enqueue_tasks = Mock(return_value=True)

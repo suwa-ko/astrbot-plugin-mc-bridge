@@ -15,7 +15,11 @@
 ## 游戏聊天
 
 在 `game_chat_names` 中配置机器人名字；游戏内说出名字即可对话。
-游戏聊天路径有独立的冷却、重复过滤和身份校验。
+游戏聊天路径有独立的冷却、重复过滤和身份校验。游戏公共聊天按公共受众处理：即使说话的是主人，也只能使用只读状态查询，不能执行移动/挖掘/任务，也不会读取私有地点记忆。
+
+## 白名单群
+
+`shared_memory_group_whitelist` 中配置群号后，群聊可以只读使用 MC 共享记忆。群只能看到 `group_shared` 地点和本群专属地点，不能写入、捕获群聊原文或控制游戏。群内主人也按公共受众处理。
 
 ## 常用自然语言
 
@@ -61,6 +65,19 @@ mc_task_status            任务状态和最近结果
 mc_recipes                服务器同步配方
 mc_protect                管理建筑/容器保护区域
 ```
+
+## 记忆工具
+
+```text
+mc_memory get/list/find/history     查询地点（返回 place_ref 和安全标签）
+mc_memory remember/verify/forget    主人私聊维护地点
+mc_memory share                     分享为 shared 或 group:<群号>
+mc_memory bind_world                同地址换档后重新绑定世界实例
+mc_goto place_ref=p_xxx             按记忆地点导航
+mc_recall_memory                    查主人 MC 经历；白名单群只查群可见摘要
+```
+
+精确坐标不会出现在模型上下文中。主人私聊查询地点时，插件会在最终回复末尾追加本地坐标卡片；群聊和 MC 公共聊天不会追加。
 
 ## 动作原语
 

@@ -59,6 +59,8 @@ from .task_checkpoint import baseline_from_status, clean_checkpoint, resume_plan
 from .break_policy import BreakPolicy
 from .short_history import ShortHistoryStore
 from .poi_memory import PoiMemory
+from .memory_store import MemoryStore
+from .privacy import redact_text
 
 from .reply_route import ReplyRoute, REPLY_ROUTE, UNSET, event_route, game_route
 from .vision import vision_input
@@ -474,6 +476,8 @@ class McBridgePlugin(Star):
         self.bridge.on_respawn=self._respawn_signal
         self._started = False
         self._shared_memory = None
+        self._memory_store = None
+        self._memory_world_cache: dict[str, str] = {}
         self._closing = False
         self._manual_movement = False
         self._control_epoch = 0
@@ -502,6 +506,7 @@ class McBridgePlugin(Star):
         self._last_task_result: dict | None = None
         self._preempting = False
         self._eating_until = 0.0
+        self._group_memory_last: dict[str, float] = {}
 
     @staticmethod
     def _split_game_chat(text: str) -> tuple[str, str]:
@@ -827,10 +832,6 @@ class McBridgePlugin(Star):
             await trace.finish('send_failed',exc)
             logger.warning('[mc-bridge] notice failed channel=%s type=%s',route.channel,type(exc).__name__)
             return False
-        shared=getattr(self,'_shared_memory',None)
-        if shared is not None:
-            try:await shared.capture_event(text)
-            except Exception as exc:logger.warning('[mc-bridge] event capture deferred: %s',type(exc).__name__)
         return True
 
     @staticmethod
@@ -1274,6 +1275,203 @@ class McBridgePlugin(Star):
             self._poi_memory = memory
         return memory
 
+    def _memory_store_for(self) -> MemoryStore:
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            root = Path(StarTools.get_data_dir(PLUGIN_NAME))
+            store = MemoryStore(root / "memory.db")
+            try:
+                legacy = root / "poi_memory.json"
+                if legacy.exists():
+                    store.migrate_legacy_file(legacy)
+            except Exception as exc:
+                logger.warning("[mc-bridge] legacy memory migration deferred: %s", type(exc).__name__)
+            self._memory_store = store
+        return store
+
+    def _memory_scope_for(self, status: dict | None = None) -> dict:
+        status = status if isinstance(status, dict) else {}
+        world_key = str(status.get("world_key") or "")
+        dimension = str(status.get("dimension") or "")
+        instance = ""
+        if world_key:
+            cache = getattr(self, "_memory_world_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._memory_world_cache = cache
+            instance = str(cache.get(world_key, "") or "")
+            if not instance:
+                try:
+                    instance = self._memory_store_for().ensure_world(world_key)
+                    cache[world_key] = instance
+                except Exception:
+                    instance = ""
+        return {"world_key": world_key, "world_instance": instance, "dimension": dimension}
+
+    def _group_whitelist(self) -> set[str]:
+        raw = self.config.get("shared_memory_group_whitelist", "") or self.config.get("memory_group_whitelist", "")
+        if isinstance(raw, list):
+            values = [str(item).strip() for item in raw]
+        else:
+            values = [item.strip() for item in re.split(r"[,，;\s]+", str(raw)) if item.strip()]
+        return {item for item in values if item}
+
+    def _audience(self, event) -> str:
+        """Return the effective destination, not just the speaker identity."""
+        if event is None:
+            return "unknown"
+        try:
+            platform = event.get_platform_name()
+            private = event.is_private_chat()
+        except Exception:
+            return "unknown"
+        if platform == "minecraft":
+            if (event.get_extra("_mc_connection_id", None) == self.bridge.session_id
+                    and event.get_extra("_mc_trusted_player", "")):
+                return "public_mc"
+            return "unknown"
+        if platform in {"aiocqhttp", "webchat"} and private:
+            return "owner_private"
+        if platform == "aiocqhttp" and not private:
+            try:
+                target = str(event.unified_msg_origin)
+            except Exception:
+                target = ""
+            parts = target.rsplit(":", 1)
+            gid = parts[-1] if len(parts) == 2 and parts[-1].isdigit() else ""
+            whitelist = self._group_whitelist()
+            if gid and (gid in whitelist or target in whitelist):
+                return "group:" + gid
+        return "unknown"
+
+    def _note_world_status(self, status: dict) -> None:
+        if not isinstance(status, dict):
+            return
+        world_key = str(status.get("world_key") or "")
+        if not world_key:
+            return
+        shared = getattr(self, "_shared_memory", None)
+        if shared is not None:
+            try:
+                shared.note_world_key(world_key)
+            except Exception:
+                pass
+        cache = getattr(self, "_memory_world_cache", None)
+        if isinstance(cache, dict) and world_key in cache:
+            return
+        if getattr(self, "_memory_store", None) is None:
+            return
+        try:
+            self._memory_scope_for(status)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _task_result_summary(result) -> str:
+        if not isinstance(result, dict):
+            return redact_text(result)[:300]
+        bits = []
+        for key in ("skill", "status", "goal_outcome", "partial", "complete", "success",
+                    "requested", "confirmed", "collected", "moved", "planted", "placed",
+                    "mined", "killed", "crafted", "smelted", "arrived_near"):
+            value = result.get(key)
+            if value is None:
+                continue
+            if isinstance(value, (int, float, bool)):
+                bits.append(f"{key}={value}")
+            elif isinstance(value, str):
+                bits.append(f"{key}={redact_text(value)[:80]}")
+            elif isinstance(value, list):
+                bits.append(f"{key}={len(value)}项")
+        return redact_text("；".join(bits))[:400]
+
+    @staticmethod
+    def _confirmed_count(result) -> int:
+        if not isinstance(result, dict):
+            return 0
+        for key in ("confirmed", "collected", "moved", "planted", "placed", "mined", "killed"):
+            value = result.get(key)
+            if isinstance(value, bool):
+                continue
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                continue
+        items = result.get("items")
+        return len(items) if isinstance(items, list) else 0
+
+    def _remember_home_bed(self, status: dict, bed: dict, stand: dict | None = None,
+                           *, source: str = "task_result", notes: str = ""):
+        store = getattr(self, "_memory_store", None)
+        if store is None or not isinstance(status, dict) or not isinstance(bed, dict):
+            return None
+        try:
+            scope = self._memory_scope_for(status)
+            return store.remember_place(
+                world_key=scope["world_key"], world_instance=scope["world_instance"],
+                dimension=scope["dimension"], kind="home_bed", key="main", name="重生点",
+                target=(bed.get("x"), bed.get("y"), bed.get("z")), stand=stand,
+                target_status="valid",
+                stand_status="valid" if isinstance(stand, dict) and stand.get("x") is not None else "unknown",
+                observation_status="loaded",
+                confidence=0.95, source=source, privacy="owner_only",
+                notes=notes or "verified home bed", actor="home_bed",
+            )
+        except Exception as exc:
+            logger.warning("[mc-bridge] structured home_bed write deferred: %s", type(exc).__name__)
+            return None
+
+    def _record_task_terminal_event(self, item, status: str, *, result=None, error="", goal_outcome=""):
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return None
+        task_id = str(getattr(item, "task_id", "") or "")
+        if not task_id:
+            return None
+        try:
+            baseline = getattr(item, "baseline", {}) or {}
+            scope = self._memory_scope_for({
+                "world_key": baseline.get("world_key", ""),
+                "dimension": baseline.get("dimension", ""),
+            })
+            scheduled = self._scheduler_for().get(task_id)
+            attempts = int(getattr(scheduled, "attempts", 0) or getattr(item, "attempts", 0) or 1)
+            position = baseline.get("position") if isinstance(baseline.get("position"), dict) else {}
+            target = None
+            if str(getattr(item, "kind", "") or "") == "goto":
+                target = {"x": getattr(item, "x", None), "y": getattr(item, "y", None), "z": getattr(item, "z", None)}
+            event_type = {
+                "completed": "task_completed",
+                "failed": "task_failed",
+                "cancelled": "task_cancelled",
+            }.get(status, "task_completed")
+            error_code = type(error).__name__ if not isinstance(error, str) and error else str(error or "")[:80]
+            store.record_task_event(
+                task_id=task_id,
+                run_id=str(attempts),
+                event_type=event_type,
+                opcode=str(getattr(item, "kind", "") or ""),
+                goal=str(getattr(item, "goal", "") or ""),
+                status=status,
+                goal_outcome=str(goal_outcome or getattr(item, "goal_outcome", "") or ""),
+                world_key=scope.get("world_key", ""),
+                world_instance=scope.get("world_instance", ""),
+                dimension=scope.get("dimension", ""),
+                position=position,
+                target=target,
+                confirmed_count=self._confirmed_count(result),
+                error_code=error_code,
+                error=str(error or ""),
+                result_summary=self._task_result_summary(result),
+                observation_scope="task_worker",
+                source="task_worker",
+            )
+            return task_id
+        except Exception as exc:
+            logger.warning("[mc-bridge] task event index deferred: %s", type(exc).__name__)
+            return None
+
+
     def _break_policy_for(self) -> BreakPolicy:
         policy = getattr(self, "_break_policy", None)
         if policy is None:
@@ -1561,6 +1759,7 @@ class McBridgePlugin(Star):
                         label = {"fulfilled": "技能完成", "partial": "技能部分完成", "unmet": "技能未达成"}.get(outcome, "技能结束")
                         await self._task_chat(f"{label}（{getattr(item, 'task_id', '')}）：{json.dumps(result, ensure_ascii=False, separators=(',', ':'))}")
                     self._scheduler_for().finish(item, success=True, result=result, goal_outcome=outcome)
+                    self._record_task_terminal_event(item, "completed", result=result, goal_outcome=outcome)
                     self._last_task_result = {
                         "task_id": str(getattr(item, "task_id", "") or ""),
                         "kind": str(getattr(item, "kind", "") or ""),
@@ -1588,6 +1787,7 @@ class McBridgePlugin(Star):
                         "finished_at": time.time(),
                     }
                     self._scheduler_for().cancel(str(getattr(item, "task_id", "") or ""), "task cancelled")
+                    self._record_task_terminal_event(item, "cancelled", error="task cancelled", goal_outcome="unknown")
                     self._flush_scheduler_audit()
                     raise
                 except Exception as exc:
@@ -1603,6 +1803,7 @@ class McBridgePlugin(Star):
                         "finished_at": time.time(),
                     }
                     self._scheduler_for().finish(item, success=False, error=str(exc), retryable=False)
+                    self._record_task_terminal_event(item, "failed", error=exc, goal_outcome="unmet")
                     self._flush_scheduler_audit()
                     other_routes={t.reply_route for t in self._task_queue if t.reply_route is not None and t.reply_route!=item.reply_route}
                     self._scheduler_for().cancel_all("previous task failed; queue cancelled")
@@ -1935,6 +2136,16 @@ class McBridgePlugin(Star):
                 self._telemetry=None
                 logger.warning('[mc-bridge] observation unavailable: %s',type(observation_error).__name__)
             self._shared_memory = McSharedMemory(self.context, self.config, StarTools.get_data_dir(PLUGIN_NAME))
+            try:
+                root = Path(StarTools.get_data_dir(PLUGIN_NAME))
+                self._memory_store = MemoryStore(root / "memory.db")
+                legacy = root / "poi_memory.json"
+                if legacy.exists():
+                    self._memory_store.migrate_legacy_file(legacy)
+                self._shared_memory.attach_memory_store(self._memory_store)
+            except Exception as memory_error:
+                logger.warning("[mc-bridge] structured memory unavailable: %s", type(memory_error).__name__)
+                self._memory_store = None
             await self._shared_memory.start()
         except Exception as exc:
             logger.error(f"[mc-bridge] failed to start WebSocket server: {exc}")
@@ -1957,6 +2168,12 @@ class McBridgePlugin(Star):
             await self.bridge.stop()
         if getattr(self, "_shared_memory", None) is not None:
             await self._shared_memory.stop()
+        if getattr(self, "_memory_store", None) is not None:
+            try:
+                self._memory_store.close()
+            except Exception:
+                pass
+            self._memory_store = None
         if getattr(self,'_telemetry',None) is not None:
             await self._telemetry.close()
         self._started = False
@@ -1977,13 +2194,17 @@ class McBridgePlugin(Star):
             return {"__error__": guard_error}
         try:
             if readonly:
-                return await self.bridge.call(action, params, timeout)
-            async with self._action_lock:
-                if self._closing or (epoch is not None and epoch != self._control_epoch):
-                    return {"__error__": "请求已停止或被新的控制操作中断"}
-                return await self.bridge.call(action, params, timeout)
+                result = await self.bridge.call(action, params, timeout)
+            else:
+                async with self._action_lock:
+                    if self._closing or (epoch is not None and epoch != self._control_epoch):
+                        return {"__error__": "请求已停止或被新的控制操作中断"}
+                    result = await self.bridge.call(action, params, timeout)
         except (BridgeError, ConnectionError, RuntimeError, asyncio.TimeoutError) as exc:
             return {"__error__": str(exc) or "客户端动作响应超时"}
+        if action == "status" and isinstance(result, dict):
+            self._note_world_status(result)
+        return result
 
     @staticmethod
     def _err(data: Any) -> str | None:
@@ -2072,7 +2293,8 @@ class McBridgePlugin(Star):
             "mc_pickup 拾取掉落物；mc_container 打开/读取/点击容器；mc_interact 开关门和按钮；"
             "mc_eat 进食、mc_equip 换装备、mc_attack 攻击、mc_block_context 查看方块和站位；"
             "mc_scan 扫描附近方块/实体；mc_set_respawn 设置重生床；mc_recipes 查配方；"
-            "mc_memory 读写家床/工位/资源点；mc_protect 管理保护区域；mc_screenshot 只在确实需要看画面时使用。"
+            "mc_memory 查询/记录地点（模型只看到 place_ref 和安全标签，精确坐标由本地回执卡片显示）；"
+            "mc_goto 支持 place_ref 导航；mc_protect 管理保护区域；mc_screenshot 只在确实需要看画面时使用。"
             "多步骤任务用 mc_task_start：opcode 支持 gather(resource,count)、craft(item,count)、smelt(item,count)、"
             "container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、"
             "farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、"
@@ -2096,6 +2318,15 @@ class McBridgePlugin(Star):
         err = self._err(data)
         if err:
             return err
+        if self._audience(event) != "owner_private" and isinstance(data, dict):
+            # Public Minecraft chat is a public destination even when the
+            # speaker is the owner.  Keep only non-locating status fields.
+            data = dict(data)
+            for key in ("position", "server", "nearby_players", "nearby_entities",
+                        "navigation_protection", "path_feedback", "inventory", "held",
+                        "armor", "screen"):
+                data.pop(key, None)
+            return _fmt_status(data)
         return _fmt_status(data)
 
     @filter.llm_tool(name="mc_brief")
@@ -2106,37 +2337,78 @@ class McBridgePlugin(Star):
         err = self._err(data)
         if err:
             return "状态查询失败：" + err
+        audience = self._audience(event)
+        private_view = audience == "owner_private"
         pos = data.get("position") or {}
         try:
             task = self._agent_task_status("", detail=False)
         except Exception:
             task = {}
-        try:
-            memory = self._poi_memory_for()
-            home_bed = memory.get("home_bed", "main")
-            home = memory.get("home", "main")
-        except Exception:
-            home_bed = None
-            home = None
 
-        def coord(row):
+        def safe_memory(row):
             if not isinstance(row, dict):
                 return None
-            return {k: row.get(k) for k in ("x", "y", "z", "name", "world_key", "dimension") if row.get(k) is not None}
+            store = getattr(self, "_memory_store", None)
+            if store is None and not private_view:
+                return None
+            if store is not None:
+                try:
+                    return store.safe_view(row, audience=audience)
+                except Exception:
+                    pass
+            return {
+                "kind": row.get("kind"),
+                "key": row.get("key") if private_view else "",
+                "label": row.get("name") or row.get("kind") or "地点",
+                "name": row.get("name") or row.get("kind") or "地点",
+                "dimension": row.get("dimension") or "",
+                "status": "legacy",
+                "warnings": ["旧记录，未验证；精确坐标不在模型上下文中"],
+            }
 
-        return json.dumps({
-            "position": {k: pos.get(k) for k in ("x", "y", "z")},
+        home_bed = home = None
+        try:
+            store = getattr(self, "_memory_store", None)
+            if store is not None:
+                scope = self._memory_scope_for(data)
+                if private_view:
+                    home_bed = store.latest_place(**scope, kind="home_bed", key="main")
+                    home = store.latest_place(**scope, kind="home", key="main")
+                else:
+                    beds = store.find_places(**scope, kind="home_bed", key="main",
+                                              audience=audience, limit=1)
+                    homes = store.find_places(**scope, kind="home", key="main",
+                                              audience=audience, limit=1)
+                    home_bed = beds[0] if beds else None
+                    home = homes[0] if homes else None
+            else:
+                memory = self._poi_memory_for()
+                home_bed = memory.get("home_bed", "main")
+                home = memory.get("home", "main")
+        except Exception:
+            home_bed = home = None
+        if private_view:
+            self._queue_place_cards(event, [row for row in (home_bed, home) if isinstance(row, dict)])
+        result = {
             "dimension": data.get("dimension"),
             "health": data.get("health"),
             "food": data.get("food"),
             "on_ground": data.get("on_ground"),
             "screen": data.get("screen"),
-            "hostiles": (data.get("hostiles") or [])[:3],
-            "path_feedback": data.get("path_feedback"),
-            "task": {k: task.get(k) for k in ("active", "pending_count", "current_task_id", "queue")},
-            "home_bed": coord(home_bed),
-            "home": coord(home),
-        }, ensure_ascii=False, default=str)
+            "home_bed": safe_memory(home_bed),
+            "home": safe_memory(home),
+        }
+        if private_view:
+            result.update({
+                "position": {k: pos.get(k) for k in ("x", "y", "z")},
+                "hostiles": (data.get("hostiles") or [])[:3],
+                "path_feedback": data.get("path_feedback"),
+                "task": {k: task.get(k) for k in ("active", "pending_count", "current_task_id", "queue")},
+            })
+        else:
+            task_state = task if isinstance(task, dict) else {}
+            result["task"] = {"active": bool(task_state.get("active"))}
+        return json.dumps(result, ensure_ascii=False, default=str)
 
     @filter.llm_tool(name="mc_chat")
     @require_mc_tool("mc_chat")
@@ -2159,7 +2431,8 @@ class McBridgePlugin(Star):
 
     @filter.llm_tool(name="mc_goto")
     @require_mc_tool("mc_goto")
-    async def mc_goto(self, event: AstrMessageEvent, x: int, y: int, z: int, allow_break: bool = False):
+    async def mc_goto(self, event: AstrMessageEvent, x: int = 0, y: int = 0, z: int = 0,
+                      allow_break: bool = False, place_ref: str = ""):
         """加入受监控的坐标移动任务。目标不可站立时会自动改用最近站位。
 
         Args:
@@ -2167,7 +2440,38 @@ class McBridgePlugin(Star):
             y(int): 目标方块或站位 Y。
             z(int): 目标方块或站位 Z。
             allow_break(bool): 是否允许本次移动受控掘进穿过方块；默认否，普通移动不会自动挖方块。
+            place_ref(string): 记忆地点的不透明句柄；提供时由本地解析坐标，优先于 x/y/z。
         """
+        place_ref = str(place_ref or "").strip()
+        if place_ref:
+            try:
+                store = self._memory_store_for()
+                status = await self._call("status", timeout=10)
+                err = self._err(status)
+                if err:
+                    return err
+                scope = self._memory_scope_for(status)
+                row, message = store.resolve_for_navigation(
+                    place_ref, world_key=scope["world_key"],
+                    world_instance=scope["world_instance"],
+                    dimension=scope["dimension"], audience=self._audience(event),
+                )
+                if row is None:
+                    return message or "这个地点不能自动导航"
+                local = store.local_view(row)
+                stand = local.get("stand") or local.get("target")
+                if not stand or stand.get("x") is None:
+                    return "这个地点没有可用站位，未加入移动任务"
+                tx, ty, tz = int(round(float(stand["x"]))), int(round(float(stand.get("feet_y", stand["y"])))), int(round(float(stand["z"])))
+                label = local.get("label") or local.get("kind") or "地点"
+                item = QueuedTask("goto", f"去 {label}", x=tx, y=ty, z=tz,
+                                  params={"allow_break": bool(allow_break), "place_ref": place_ref})
+                if not self._enqueue_tasks([item]):
+                    return "队列已满，未加入"
+                self._queue_place_cards(event, [row])
+                return f"已按地点记忆加入移动任务（{label}），实际到达后才汇报完成；精确坐标由本地卡片显示"
+            except Exception as exc:
+                return "地点导航未完成：" + type(exc).__name__
         target, info = await self._resolve_navigation_target(x, y, z)
         if target is None:
             return info
@@ -2629,9 +2933,10 @@ class McBridgePlugin(Star):
                         "任务执行中查询进度用 mc_task_status，等待用 mc_wait；这两个工具不会被当前任务阻塞。"
                         "状态/任务/家床一起查优先用 mc_brief，一次拿全，不要分开调用 mc_status + mc_task_status + mc_memory；独立的只读查询可以在同一轮一起发起，但移动/挖掘/放置/停止等有依赖的动作必须等前一个结果。"
                         "短任务会由 mc_task_start 在 short_task_wait_seconds 内直接返回结果（inline=true）；只有 inline=false 的长任务才回复已提交并等待通知，不要连续 mc_wait/mc_task_status 轮询。mc_wait 仍可用于手动等待。"
-                        "主人明确说去某处/下楼/去房间时，先用 mc_status 确认位置（最多一次），然后直接 mc_goto 到已知坐标或记忆坐标；不要为了找路先连续 mc_scan 门/梯子/楼梯，路线由 Baritone 负责。"
+                        "主人明确说去某处/下楼/去房间时，先用 mc_status 确认位置（最多一次），然后直接 mc_goto 到已知坐标或 place_ref；不要为了找路先连续 mc_scan 门/梯子/楼梯，路线由 Baritone 负责。"
                         "路线、门、梯子、楼梯、坐标类问题禁止调用 mc_see；它会被直接拦截并浪费一轮，直接用 mc_scan/mc_block_context。"
-                        "说“记下了/记住了”必须对应 mc_set_respawn 或 mc_memory(set) 的写入成功，不能只凭上下文。"
+                        "说“记下了/记住了”必须对应 mc_set_respawn 或 mc_memory(remember/verify) 的写入成功，不能只凭上下文。"
+                        "不要在 mc_memory 参数里传坐标；记住附近地点用 operation=remember，精确坐标由本地卡片补充。"
                         "你是第一视角玩家，不要在截图里找自己；用户说刚刚/对的/继续时先参考短期历史，没有上下文就明确问。"
                     )
                 if not allow_actions:
@@ -2857,12 +3162,14 @@ class McBridgePlugin(Star):
                 return "MC共享记忆尚未就绪"
             if CONTROL_EPOCH.get() not in (None, self._control_epoch):
                 return "旧请求已中断，未读取共享记忆"
+            if name == "mc_recall_memory" and self._audience(event).startswith("group:"):
+                return shared.group_denial(event, self.bridge)
             return shared.denial(event, self.bridge, forget=name == "mc_forget_memory")
         if self._closing:
             return "Minecraft 插件正在停止，未执行"
         text = str(event.message_str or "") if event is not None else ""
         recall_question = bool(re.search(r'(?:记得|回忆|聊过|上次|之前|昨天|前天).{0,48}(?:吗|什么|怎么|多少|哪|是否|[?？])', text))
-        if name not in {"mc_status", "mc_look", "mc_see", "mc_screenshot"} and event is not None and self._is_memory_query(text) and (not action_intent(text) or recall_question):
+        if name not in {"mc_status", "mc_look", "mc_see", "mc_screenshot", "mc_memory", "mc_brief", "mc_recall_memory", "mc_task_status", "mc_capabilities"} and event is not None and self._is_memory_query(text) and (not action_intent(text) or recall_question):
             return "本轮是回忆，不执行新的游戏动作"
         if not self.bridge.connected and name not in {"mc_stop", "mc_status", "mc_screenshot", "mc_see"}:
             return "Minecraft 客户端未连接，未执行"
@@ -2873,7 +3180,7 @@ class McBridgePlugin(Star):
             "mc_stop", "mc_flee", "mc_status", "mc_look", "mc_see", "mc_screenshot", "mc_recipes",
             "mc_scan", "mc_inspect_block", "mc_inspect_target", "mc_wake",
             "mc_task_status", "mc_task_start", "mc_task_cancel", "mc_wait", "mc_capabilities",
-            "mc_brief", "mc_block_context", "mc_get_menu"
+            "mc_brief", "mc_block_context", "mc_get_menu", "mc_memory", "mc_recall_memory"
         }:
             return "任务正在执行，请先停止再切换操作，未执行"
         if event is None:
@@ -2890,12 +3197,20 @@ class McBridgePlugin(Star):
             identity = event.get_extra("_mc_sender_uuid", "")
             if not sender or not identity:
                 return "游戏消息身份未验证，未执行"
+            safe = {"mc_status", "mc_look", "mc_see", "mc_screenshot", "mc_capabilities"}
+            if name in safe & self._safe_tool_names() or name == "mc_capabilities":
+                return None
             if self._player_allowed(sender):
-                return None
-            safe = {"mc_status", "mc_look", "mc_see", "mc_screenshot"}
-            if name in safe & self._safe_tool_names():
-                return None
+                return "游戏公共聊天只允许只读状态查询；动作和私有记忆请在主人私聊中下达"
             return "这项动作需要主人下令，未执行"
+        if platform == "aiocqhttp" and not private:
+            audience = self._audience(event)
+            if not audience.startswith("group:"):
+                return "这个群没有开放MC只读记忆，未执行"
+            if name in {"mc_memory", "mc_brief", "mc_status", "mc_task_status",
+                        "mc_capabilities", "mc_recall_memory"}:
+                return None
+            return "白名单群为永久只读：只能查询共享状态和记忆，不能写入或控制游戏"
         if platform not in {"aiocqhttp", "webchat"} or not private:
             return "Minecraft 工具仅在授权私聊或可信游戏会话中使用，未执行"
         if self.config.get("qq_admin_only", True) and not event.is_admin():
@@ -3285,13 +3600,47 @@ class McBridgePlugin(Star):
     @filter.on_llm_request(priority=-9999)
     async def inject_shared_mc_memory(self, event, request):
         shared = getattr(self, "_shared_memory", None)
-        if shared is None or not shared.qq_owner(event):
+        if shared is None:
             return
-        shared.prepare_qq(event)
-        context = await shared.context_for(event, self.bridge, str(event.message_str or ""))
+        audience = self._audience(event)
+        if shared.qq_owner(event):
+            shared.prepare_qq(event)
+            context = await shared.context_for(event, self.bridge, str(event.message_str or ""))
+        elif audience.startswith("group:"):
+            gid = audience.split(":", 1)[1]
+            try:
+                cooldown = max(0.0, float(self.config.get("shared_memory_group_cooldown_seconds", 10) or 10))
+            except (TypeError, ValueError):
+                cooldown = 10.0
+            now = time.monotonic()
+            last = getattr(self, "_group_memory_last", {})
+            if now - float(last.get(gid, 0.0) or 0.0) < cooldown:
+                return
+            context = await shared.group_context_for(event, self.bridge, str(event.message_str or ""))
+            if context:
+                last[gid] = now
+                self._group_memory_last = last
+        else:
+            return
         parts = request.extra_user_content_parts
         if context and not any(MARKER in str(getattr(part, "text", "")) for part in parts):
             parts.append(TextPart(text=context).mark_as_temp())
+
+    @filter.on_decorating_result(priority=100)
+    async def append_local_memory_card(self, event):
+        cards = event.get_extra("_mc_place_cards", None)
+        if not cards:
+            return
+        event.set_extra("_mc_place_cards", [])
+        if self._audience(event) != "owner_private":
+            return
+        result = event.get_result()
+        chain = getattr(result, "chain", None)
+        if chain is None:
+            return
+        text = "\n".join(str(card) for card in cards if str(card).strip())
+        if text:
+            chain.append(Plain(text="\n" + text[:1200]))
 
     @filter.after_message_sent(priority=-9999)
     async def record_mc_delivery(self,event,*_args):
@@ -4270,14 +4619,189 @@ class McBridgePlugin(Star):
             saved = memory.get("home_bed", "main")
         except Exception as exc:
             return "床已交互，但家床记忆写入失败：" + str(exc)
+        place_ref = ""
+        place = self._remember_home_bed(
+            status, {"x": int(x), "y": int(y), "z": int(z)}, stand,
+            source="task_result", notes="mc_set_respawn verified bed interaction",
+        )
+        if place is not None:
+            place_ref = place.get("public_ref", "")
+            self._queue_place_cards(event, [place])
         return json.dumps({
             "saved": saved is not None,
             "bed": context.get("block"),
             "position": {"x": int(x), "y": int(y), "z": int(z)},
             "approached_to": {"x": stand["x"], "y": stand.get("feet_y", stand["y"]), "z": stand["z"]},
             "memory": saved,
+            "place_ref": place_ref,
             "note": "已走到床边、完成交互并写入 home_bed；服务端重生点提示仍以游戏画面为准",
         }, ensure_ascii=False)
+
+    def _queue_place_cards(self, event, rows) -> None:
+        if event is None or self._audience(event) != "owner_private":
+            return
+        cards = []
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                card = store.local_card(row)
+            except Exception:
+                card = ""
+            if card:
+                cards.append(card)
+        if cards:
+            existing = event.get_extra("_mc_place_cards", None)
+            merged = list(existing or []) + cards
+            event.set_extra("_mc_place_cards", merged[:5])
+
+    async def _remember_nearby(self, kind: str, key: str, name: str, status: dict):
+        queries = {
+            "home_bed": "#minecraft:beds",
+            "chest": "minecraft:chest",
+            "workbench": "minecraft:crafting_table",
+            "furnace": "minecraft:furnace",
+            "portal": "minecraft:nether_portal",
+        }
+        scope = self._memory_scope_for(status)
+        store = self._memory_store_for()
+        query = queries.get(kind, "")
+        target = stand = None
+        target_status = stand_status = "unknown"
+        if query:
+            scan = await self._call("scan_blocks", {"radius": 8, "limit": 8, "block": query}, timeout=15)
+            err = self._err(scan)
+            if err:
+                return None, err
+            blocks = [item for item in (scan.get("blocks") or []) if isinstance(item, dict)
+                      and item.get("x") is not None]
+            blocks.sort(key=lambda item: float(item.get("distance", 999) or 999))
+            if not blocks:
+                return None, "附近没有找到要记录的地点，请先靠近或换一个类型"
+            block = blocks[0]
+            target = (int(block["x"]), int(block["y"]), int(block["z"]))
+            context = await self._call("block_context", {"x": target[0], "y": target[1], "z": target[2]}, timeout=10)
+            err = self._err(context)
+            if err:
+                return None, err
+            block_id = str(context.get("block") or block.get("block") or "")
+            if kind == "home_bed" and not block_id.endswith("_bed"):
+                return None, "找到的目标不是床，未记录家床"
+            stands = [item for item in (context.get("stands") or []) if isinstance(item, dict)]
+            stands.sort(key=lambda item: float(item.get("distance", 999) or 999))
+            if stands:
+                stand = stands[0]
+                stand_status = "valid"
+            target_status = "valid"
+        else:
+            position = status.get("position") if isinstance(status.get("position"), dict) else {}
+            if position.get("x") is None:
+                return None, "无法确认当前位置，未写入"
+            target = (int(position.get("x")), int(position.get("y", 0)), int(position.get("z")))
+            stand = {"x": position.get("x"), "y": position.get("y"), "z": position.get("z"),
+                     "feet_y": position.get("y")}
+            target_status = stand_status = "valid"
+        row = store.remember_place(
+            world_key=scope["world_key"],
+            world_instance=scope["world_instance"],
+            dimension=scope["dimension"],
+            kind=kind,
+            key=key,
+            name=name,
+            target=target,
+            stand=stand,
+            target_status=target_status,
+            stand_status=stand_status,
+            observation_status="loaded",
+            confidence=0.7,
+            source="observed",
+            privacy="owner_only",
+            notes="remembered from local observation",
+            actor="mc_memory",
+        )
+        return row, ""
+
+    async def _verify_memory_place(self, row: dict, scope: dict):
+        store = self._memory_store_for()
+        target_x = row.get("target_x")
+        target_y = row.get("target_y")
+        target_z = row.get("target_z")
+        if target_x is None:
+            return store.verify_place(row["public_ref"], target_status="invalid",
+                                      stand_status="unknown", observation_status="unloaded",
+                                      world_instance=scope.get("world_instance", ""),
+                                      actor="mc_memory")
+        context = await self._call("block_context", {"x": target_x, "y": target_y, "z": target_z}, timeout=10)
+        err = self._err(context)
+        if err:
+            return {"__error__": err}
+        block_id = str(context.get("block") or "")
+        expected = {
+            "home_bed": "_bed",
+            "chest": "chest",
+            "workbench": "crafting_table",
+            "furnace": "furnace",
+            "portal": "nether_portal",
+        }.get(str(row.get("kind") or ""))
+        target_status = "valid" if block_id and (not expected or expected in block_id) else "invalid"
+        stands = [item for item in (context.get("stands") or []) if isinstance(item, dict)]
+        stand_status = "valid" if stands else "unknown"
+        return store.verify_place(
+            row["public_ref"], target_status=target_status,
+            stand_status=stand_status, observation_status="loaded",
+            note=f"block={block_id[:80]}", actor="mc_memory",
+            world_instance=scope.get("world_instance", ""),
+        )
+
+    @staticmethod
+    def _legacy_memory_safe(row: dict) -> dict:
+        return {
+            "kind": row.get("kind"),
+            "key": row.get("key"),
+            "label": row.get("name") or row.get("kind") or "地点",
+            "name": row.get("name") or row.get("kind") or "地点",
+            "dimension": row.get("dimension") or "",
+            "status": "legacy",
+            "warnings": ["新记忆库不可用，当前只显示旧记录；不能自动导航"],
+        }
+
+    def _legacy_memory_fallback(self, event, operation: str, kind: str, key: str):
+        try:
+            memory = self._poi_memory_for()
+        except Exception:
+            return None
+        if operation in {"list", "find", "nearby"}:
+            rows = memory.list("" if kind in {"", "all"} else kind)
+            if rows and self._audience(event) == "owner_private":
+                cards = []
+                for row in rows[:5]:
+                    label = row.get("name") or row.get("kind") or "地点"
+                    cards.append(
+                        f"[本地坐标卡片] {label}（legacy）；目标({row.get('x')}, {row.get('y')}, {row.get('z')})；"
+                        f"维度 {row.get('dimension') or '未知'}；旧记录，未验证"
+                    )
+                if cards:
+                    event.set_extra("_mc_place_cards", cards)
+            return json.dumps({"found": bool(rows), "items": [self._legacy_memory_safe(row) for row in rows],
+                               "note": "新记忆库不可用，当前为旧 JSON 只读回退。"}, ensure_ascii=False)
+        if operation == "get":
+            row = memory.get(kind, key)
+            if row and self._audience(event) == "owner_private":
+                label = row.get("name") or row.get("kind") or "地点"
+                event.set_extra("_mc_place_cards", [
+                    f"[本地坐标卡片] {label}（legacy）；目标({row.get('x')}, {row.get('y')}, {row.get('z')})；"
+                    f"维度 {row.get('dimension') or '未知'}；旧记录，未验证"
+                ])
+            return json.dumps({"found": row is not None,
+                               "item": self._legacy_memory_safe(row) if row else None,
+                               "note": "新记忆库不可用，当前为旧 JSON 只读回退。"}, ensure_ascii=False)
+        if operation == "forget":
+            return json.dumps({"forgot": bool(memory.forget(kind, key)),
+                               "note": "新记忆库不可用，已删除旧 JSON 记录。"}, ensure_ascii=False)
+        return None
 
     @filter.llm_tool(name="mc_memory")
     @require_mc_tool("mc_memory")
@@ -4287,56 +4811,189 @@ class McBridgePlugin(Star):
         operation: str = "get",
         kind: str = "home_bed",
         key: str = "main",
-        x: int = 0,
-        y: int = -9999,
-        z: int = 0,
+        place_ref: str = "",
         name: str = "",
+        query: str = "",
+        share_scope: str = "",
     ):
-        """读写 MC 坐标记忆：家、家床、工作台、熔炉、资源点、村庄、危险点、箱子。
+        """读写 MC 地点记忆。模型只看到不透明 place_ref 和安全标签；精确坐标由本地卡片显示。
 
         Args:
-            operation(string): get、set、forget、list。
-            kind(string): home/home_bed/workbench/furnace/resource/village/danger/chest。
+            operation(string): get、list、find、history、remember、verify、forget、pin、share、bind_world。
+            kind(string): home/home_bed/base/portal/farm/mine/storage/chest/workbench/furnace/villager/danger/waypoint/resource/structure。
             key(string): 记录键，默认 main。
-            x(int): set时X坐标。
-            y(int): set时Y坐标。
-            z(int): set时Z坐标。
-            name(string): 可选显示名。
+            place_ref(string): 地点的不透明句柄，优先于 kind/key。
+            name(string): remember 时的安全显示名；也可作为 list/find 的筛选词。
+            query(string): list/find 的可选筛选词。
+            share_scope(string): share 时的目标：owner_only、shared 或 group:<群号>；群号必须在白名单。
         """
         operation = str(operation or "get").strip().lower()
         kind = str(kind or "home_bed").strip()
         key = str(key or "main").strip()
+        place_ref = str(place_ref or "").strip()
+        name = str(name or "").strip()
+        query = str(query or "").strip()
+        share_scope = str(share_scope or "").strip()
+        audience = self._audience(event)
+        is_owner = audience == "owner_private"
+        is_group = audience.startswith("group:")
+        if not (is_owner or is_group):
+            return "MC地点记忆仅授权私聊或白名单群只读使用；当前会话未读取私有记忆"
+        if is_group and operation in {"remember", "verify", "forget", "pin", "share", "bind_world"}:
+            return "群聊永久只读：不能写入、复核、删除或分享地点记忆"
         try:
-            memory = self._poi_memory_for()
-            if operation == "list":
-                return json.dumps({"items": memory.list(kind if kind not in {"", "all"} else "")}, ensure_ascii=False)
-            if operation == "get":
-                row = memory.get(kind, key)
-                return json.dumps({"found": row is not None, "item": row}, ensure_ascii=False)
-            if operation == "forget":
-                return json.dumps({"forgot": memory.forget(kind, key)}, ensure_ascii=False)
-            if operation != "set":
-                return "operation 只能是 get/set/forget/list"
-            if int(y) == -9999:
-                return "set 需要 x/y/z 坐标"
+            store = self._memory_store_for()
             status = await self._call("status", timeout=10)
             err = self._err(status)
             if err:
                 return err
-            if kind == "home_bed":
-                check = await self._call("inspect_block", {"x": int(x), "y": int(y), "z": int(z)}, timeout=10)
-                if self._err(check):
-                    return self._err(check)
-                block = str(check.get("block") or "")
-                if not block.endswith("_bed"):
-                    return "目标不是床，未写入家床记忆"
-            row = memory.set(
-                kind, key, name=name, world_key=str(status.get("world_key") or ""),
-                dimension=str(status.get("dimension") or ""), x=int(x), y=int(y), z=int(z),
-            )
-            return json.dumps({"saved": True, "item": row}, ensure_ascii=False)
+            scope = self._memory_scope_for(status)
+
+            def find_row():
+                if place_ref:
+                    row = store.get_place(place_ref)
+                    if row is not None and not store.can_view(row, audience):
+                        return None
+                    return row
+                if is_group:
+                    rows = store.find_places(
+                        world_key=scope["world_key"], world_instance=scope["world_instance"],
+                        dimension=scope["dimension"], kind=kind, key=key,
+                        audience=audience, limit=5,
+                    )
+                    return rows[0] if rows else None
+                return store.latest_place(
+                    world_key=scope["world_key"], world_instance=scope["world_instance"],
+                    dimension=scope["dimension"], kind=kind, key=key,
+                )
+
+            if operation in {"list", "find", "nearby"}:
+                use_kind = "" if kind in {"", "all"} else kind
+                rows = store.find_places(
+                    world_key=scope["world_key"], world_instance=scope["world_instance"],
+                    dimension=scope["dimension"], kind=use_kind,
+                    query=query or name, audience=audience, limit=20,
+                )
+                self._queue_place_cards(event, rows)
+                try:
+                    store.record_retrieval(audience=audience, query=query or name, rows=rows)
+                except Exception:
+                    pass
+                items = [store.safe_view(row, audience=audience) for row in rows]
+                return json.dumps({
+                    "found": bool(items), "items": items,
+                    "note": "精确坐标不会进入模型；主人私聊会由本地卡片补充坐标。",
+                }, ensure_ascii=False)
+
+            if operation == "history":
+                row = find_row()
+                if row is None:
+                    return json.dumps({"found": False, "note": "没有这个地点记录"}, ensure_ascii=False)
+                self._queue_place_cards(event, [row])
+                history = []
+                for item in store.place_history(row["public_ref"]):
+                    history.append({
+                        "changed_at": time.strftime("%Y-%m-%d %H:%M", time.localtime(item.get("changed_at", 0))),
+                        "change_kind": item.get("change_kind", ""),
+                        "actor": item.get("actor", ""),
+                        "note": redact_text(item.get("note", ""))[:200],
+                    })
+                return json.dumps({"found": True, "item": store.safe_view(row, audience=audience),
+                                   "history": history}, ensure_ascii=False)
+
+            if operation == "get":
+                row = find_row()
+                if row is None:
+                    return json.dumps({"found": False, "note": "没有这个地点记录，不要编造坐标"}, ensure_ascii=False)
+                self._queue_place_cards(event, [row])
+                return json.dumps({"found": True, "item": store.safe_view(row, audience=audience),
+                                   "note": "精确坐标由本地卡片补充，不要自己编造。"}, ensure_ascii=False)
+
+            if operation == "forget":
+                row = find_row()
+                if row is None:
+                    return json.dumps({"forgot": False, "note": "没有这个地点记录"}, ensure_ascii=False)
+                forgot = store.forget_place(row["public_ref"], actor="mc_memory", note="owner forget")
+                return json.dumps({"forgot": bool(forgot), "place_ref": row["public_ref"]}, ensure_ascii=False)
+
+            if operation == "pin":
+                row = find_row()
+                if row is None:
+                    return json.dumps({"pinned": False, "note": "没有这个地点记录"}, ensure_ascii=False)
+                pinned = store.pin_place(row["public_ref"], True)
+                self._queue_place_cards(event, [store.get_place(row["public_ref"]) or row])
+                return json.dumps({"pinned": bool(pinned), "place_ref": row["public_ref"]}, ensure_ascii=False)
+
+            if operation == "verify":
+                row = find_row()
+                if row is None:
+                    return json.dumps({"verified": False, "note": "没有这个地点记录"}, ensure_ascii=False)
+                verified = await self._verify_memory_place(row, scope)
+                if isinstance(verified, dict) and verified.get("__error__"):
+                    return "复核失败：" + str(verified["__error__"])
+                self._queue_place_cards(event, [verified] if verified else [])
+                return json.dumps({"verified": bool(verified),
+                                   "item": store.safe_view(verified, audience=audience) if verified else None},
+                                  ensure_ascii=False)
+
+            if operation == "share":
+                row = find_row()
+                if row is None:
+                    return json.dumps({"shared": False, "note": "没有这个地点记录"}, ensure_ascii=False)
+                target = share_scope or "shared"
+                privacy = ""
+                if target in {"owner", "owner_only", "private"}:
+                    privacy = "owner_only"
+                elif target in {"shared", "group_shared", "all"}:
+                    privacy = "group_shared"
+                elif target.startswith("group:"):
+                    gid = target.split(":", 1)[1].strip()
+                    whitelist = self._group_whitelist()
+                    allowed = bool(gid) and any(entry == gid or entry.endswith(":" + gid) for entry in whitelist)
+                    if not allowed:
+                        return "群号不在白名单，未分享"
+                    privacy = "group_only:" + gid
+                else:
+                    return "share_scope 只能是 owner_only、shared 或 group:<群号>"
+                updated = store.set_privacy(row["public_ref"], privacy, actor="mc_memory")
+                self._queue_place_cards(event, [updated] if updated else [])
+                return json.dumps({
+                    "shared": bool(updated),
+                    "place_ref": row["public_ref"],
+                    "scope": privacy,
+                    "item": store.safe_view(updated, audience="owner_private") if updated else None,
+                }, ensure_ascii=False)
+
+            if operation == "bind_world":
+                instance = store.rebind_world(scope["world_key"], alias=name)
+                cache = getattr(self, "_memory_world_cache", None)
+                if isinstance(cache, dict):
+                    cache[scope["world_key"]] = instance
+                return json.dumps({
+                    "bound": True,
+                    "note": "已在当前世界地址创建新的世界实例；旧地点不会继承，需要重新确认。",
+                }, ensure_ascii=False)
+
+            if operation == "remember":
+                row, message = await self._remember_nearby(kind, key, name, status)
+                if row is None:
+                    return message or "没有记录到地点"
+                self._queue_place_cards(event, [row])
+                return json.dumps({
+                    "saved": True,
+                    "item": store.safe_view(row, audience=audience),
+                    "note": "地点已写入本地库；精确坐标由本地卡片补充。",
+                }, ensure_ascii=False)
+
+            return "operation 只能是 get/list/find/history/remember/verify/forget/pin/share/bind_world"
         except ValueError as exc:
             return "记忆操作失败：" + str(exc)
+        except Exception as exc:
+            logger.warning("[mc-bridge] memory operation failed: %s", type(exc).__name__)
+            fallback = self._legacy_memory_fallback(event, operation, kind, key)
+            if fallback is not None:
+                return fallback
+            return "记忆操作未完成：" + type(exc).__name__
 
     @filter.llm_tool(name="mc_interact_block")
     @require_mc_tool("mc_interact_block")
@@ -4708,7 +5365,11 @@ class McBridgePlugin(Star):
             task_id(string): 可选任务ID；留空查看当前队列和活动任务。
             detail(bool): 是否返回完整租约/审计/历史；默认只返回紧凑摘要。
         """
-        return json.dumps(self._agent_task_status(task_id, detail=bool(detail)), ensure_ascii=False)
+        data = self._agent_task_status(task_id, detail=bool(detail))
+        if self._audience(event) != "owner_private" and isinstance(data, dict):
+            data = {"active": bool(data.get("active")),
+                    "pending_count": int(data.get("pending_count", 0) or 0)}
+        return json.dumps(data, ensure_ascii=False)
 
     @filter.llm_tool(name="mc_task_cancel")
     @require_mc_tool("mc_task_cancel")
@@ -4805,6 +5466,10 @@ class McBridgePlugin(Star):
             date(string): 可选，YYYY-MM-DD或今天/昨天/前天。
         """
         try:
+            audience = self._audience(event)
+            if audience.startswith("group:"):
+                return await self._shared_memory.group_recall(
+                    event, self.bridge, audience.split(":", 1)[1], query)
             return await self._shared_memory.recall(event, self.bridge, query, date)
         except Exception as exc:
             return "MC共享记忆未能查询：" + type(exc).__name__

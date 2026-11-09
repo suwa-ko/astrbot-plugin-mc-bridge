@@ -1,5 +1,15 @@
 # Changelog
 
+## 未发布
+
+- 新增本地结构化记忆库 `memory.db`：地点状态机、目标/站位/观察分离、世界实例绑定、旧 `poi_memory.json` 幂等迁移、任务终态事件索引和待同步 outbox。
+- `mc_memory` 改为 `place_ref` 安全视图：模型不再接收精确坐标；精确坐标只在主人私聊由本地事实卡片补充。`mc_goto` 支持 `place_ref` 导航。
+- 严格 A08-M：LivingMemory、嵌入、重排和旧文档检索只接收脱敏内容；QQ 私聊原文改为主题摘要，坐标、世界标识和私聊原文不进入记忆请求。
+- MC 公共聊天改为只读状态受众：即使发起者是主人，也不能在公共聊天执行移动/挖掘/任务或读取私有记忆。
+- 新增白名单群只读：群只能查询 `group_shared` / 本群 `group_only` 地点、群可见 LivingMemory 摘要和只读状态；不能写入、捕获群聊或控制游戏。主人可用 `mc_memory(share)` 把地点分享为 `shared` 或 `group:<群号>`。
+- 任务终态由 worker 直接写结构化事件，短任务直返、通知丢失、取消、失败走同一幂等路径；旧 LivingMemory scope 保持不变。
+- 测试基线更新为 366 项。
+
 ## 1.3.6
 
 - 单任务 `mc_task_start` 会在 `short_task_wait_seconds`（默认 5 秒）内等待；完成、失败或取消时直接返回 inline 结果，并抑制重复的异步通知。

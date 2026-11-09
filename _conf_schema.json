@@ -162,6 +162,36 @@
     "default": "",
     "hint": "留空使用default:FriendMessage:主人QQ；不合并其他群或私聊。"
   },
+  "shared_memory_group_whitelist": {
+    "description": "开放MC只读记忆的白名单群号",
+    "type": "string",
+    "default": "",
+    "hint": "逗号分隔群号；留空表示不开放任何群。群聊永久只读，不能写入记忆或控制游戏。"
+  },
+  "shared_memory_group_max_results": {
+    "description": "白名单群单次最多返回的记忆条数",
+    "type": "int",
+    "default": 2,
+    "hint": "1-4；只返回主人标为 group_shared 或群专属的地点和记忆。"
+  },
+  "shared_memory_group_max_chars": {
+    "description": "白名单群单次记忆注入最大字符数",
+    "type": "int",
+    "default": 600,
+    "hint": "200-1200；防止群聊上下文被记忆占满。"
+  },
+  "shared_memory_group_cooldown_seconds": {
+    "description": "白名单群记忆注入冷却秒数",
+    "type": "int",
+    "default": 10,
+    "hint": "同一群两次自动记忆注入的最小间隔；工具主动查询不受此限制。"
+  },
+  "shared_memory_group_capture_chat": {
+    "description": "是否捕获群聊原文（保留只读语义，不启用）",
+    "type": "bool",
+    "default": false,
+    "hint": "群聊永久只读；该开关不会把群消息写入长期记忆。"
+  },
   "autonomy_radius": {
     "description": "自主探索活动半径（格）",
     "type": "int",

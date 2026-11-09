@@ -2456,6 +2456,17 @@ class McBridgePlugin(Star):
                     world_instance=scope["world_instance"],
                     dimension=scope["dimension"], audience=self._audience(event),
                 )
+                if row is None and self._audience(event) == "owner_private":
+                    # A legacy/expired place may become usable after a local
+                    # block-context check; never trust it without verification.
+                    candidate = store.get_place(place_ref)
+                    if candidate is not None and store.can_view(candidate, "owner_private"):
+                        await self._verify_memory_place(candidate, scope)
+                        row, message = store.resolve_for_navigation(
+                            place_ref, world_key=scope["world_key"],
+                            world_instance=scope["world_instance"],
+                            dimension=scope["dimension"], audience=self._audience(event),
+                        )
                 if row is None:
                     return message or "这个地点不能自动导航"
                 local = store.local_view(row)

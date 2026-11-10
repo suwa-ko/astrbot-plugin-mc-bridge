@@ -94,7 +94,11 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         await self.seed()
         self.assertIn("MC家在山上", await self.service.recall(Event(), self.bridge, "MC家"))
         self.assertIn("MC家在山上", await self.service.recall(self.game_event(), self.bridge, "家"))
-        self.engine.search_memories.assert_awaited_with("家", k=4, session_id=self.service.scope, persona_id="MinecraftBot")
+        owner_query = self.engine.search_memories.await_args_list[0].args[0]
+        self.assertTrue(owner_query.startswith("MC "))
+        self.assertNotIn("MC家", owner_query)
+        game_query = self.engine.search_memories.await_args_list[-1].args[0]
+        self.assertEqual(game_query, "家")
 
     async def test_native_scoped_integration_check(self):
         await self.seed()

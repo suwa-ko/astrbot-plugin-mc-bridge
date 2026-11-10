@@ -301,6 +301,15 @@ class PrivacyTests(unittest.TestCase):
         self.assertTrue(privacy.contains_coordinate(text))
         self.assertFalse(privacy.contains_coordinate(redacted))
 
+    def test_redacts_python_dict_coordinates(self):
+        text = "工作台位于{'x': -339, 'y': 69, 'z': -188}，已返回。"
+        redacted = privacy.redact_text(text)
+        self.assertNotIn("-339", redacted)
+        self.assertNotIn("-188", redacted)
+        self.assertIn("[坐标]", redacted)
+        self.assertTrue(privacy.contains_coordinate(text))
+        self.assertFalse(privacy.contains_coordinate(redacted))
+
     def test_private_digest_never_keeps_verbatim_private_chat(self):
         text = "MC家建在山上，验证码是998877，记住这条路"
         digest = privacy.private_digest(text)

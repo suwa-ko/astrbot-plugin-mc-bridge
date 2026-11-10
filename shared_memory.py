@@ -398,7 +398,7 @@ class McSharedMemory:
         never sends it to embedding or rerank.  Date-query output is redacted by
         ``memory_safe_text`` before it reaches a model.
         """
-        setting = f"native_redaction_v3:{self.scope}:{self.persona}"
+        setting = f"native_redaction_v4:{self.scope}:{self.persona}"
         cursor = await self.db.execute("SELECT value FROM settings WHERE key=?", (setting,))
         if await cursor.fetchone():
             self._legacy_redaction_done = True
@@ -599,6 +599,10 @@ class McSharedMemory:
         if SENSITIVE.search(query):
             return "共享范围只包含MC内容，没有查询其他私聊记忆"
         safe_query = self._redact(query)[:500] or "MC 游戏经历"
+        if self.qq_owner(event):
+            # A private owner query is itself private-chat text.  Only a coarse
+            # topic digest may be sent to embedding/rerank.
+            safe_query = "MC " + private_digest(query)
         engine = self._native()
         if engine is not None and not self._legacy_redaction_done:
             await self._redact_legacy_native()

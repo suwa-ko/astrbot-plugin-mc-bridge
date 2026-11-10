@@ -20,6 +20,11 @@ _COORD_SEPARATED = re.compile(
     r"(?<![\w.])(?P<a>-?\d{1,7})\s*(?:[,/]\s*|\s+)(?P<b>-?\d{1,7})"
     r"\s*(?:[,/]\s*|\s+)(?P<c>-?\d{1,7})(?![\w.])"
 )
+_COORD_DICT = re.compile(
+    r"(?i)[\{\(\[]?\s*['\"]?x['\"]?\s*[:=]\s*-?\d{1,7}\s*[,; ]+\s*"
+    r"['\"]?y['\"]?\s*[:=]\s*-?\d{1,7}\s*[,; ]+\s*"
+    r"['\"]?z['\"]?\s*[:=]\s*-?\d{1,7}\s*[\}\)\]]?"
+)
 _COORD_LABELLED = re.compile(
     r"(?i)(?:\bx\s*[:=]\s*-?\d{1,7}\s*[,; ]*\s*"
     r"\by\s*[:=]\s*-?\d{1,7}\s*[,; ]*\s*"
@@ -61,6 +66,7 @@ def redact_text(text: object, *, world_keys=()) -> str:
             value = re.sub(re.escape(key), "[世界]", value)
     value = _WORLD_FIELD.sub("[世界]", value)
     value = _LONG_HEX.sub("[世界]", value)
+    value = _COORD_DICT.sub("[坐标]", value)
     value = _COORD_LABELLED.sub("[坐标]", value)
     value = _COORD_SEPARATED.sub("[坐标]", value)
     return value
@@ -69,7 +75,8 @@ def redact_text(text: object, *, world_keys=()) -> str:
 def contains_coordinate(text: object) -> bool:
     """True when the text still looks like it contains a coordinate triple."""
     value = str(text or "")
-    return bool(_COORD_LABELLED.search(value) or _COORD_SEPARATED.search(value))
+    return bool(_COORD_DICT.search(value) or _COORD_LABELLED.search(value)
+                or _COORD_SEPARATED.search(value))
 
 
 def has_world_identifier(text: object) -> bool:

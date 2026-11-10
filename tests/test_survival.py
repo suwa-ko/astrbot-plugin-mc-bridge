@@ -163,6 +163,15 @@ class SurvivalTests(unittest.IsolatedAsyncioTestCase):
         plugin._stop_task_runtime.assert_awaited_once()
         plugin._auto_flee.assert_awaited_once()
 
+    async def test_flee_cooldown_prevents_immediate_reengage(self):
+        plugin = FakePlugin()
+        supervisor = survival_mod.SurvivalSupervisor(plugin)
+        hostile = {"type": "minecraft:zombie", "name": "Zombie", "distance": 3}
+        await supervisor.evaluate(status(health=3, hostiles=[hostile]))
+        plugin.skills.combat.reset_mock()
+        await supervisor.evaluate(status(health=16, hostiles=[hostile]))
+        plugin.skills.combat.assert_not_awaited()
+
     async def test_event_sequence_deduplicates(self):
         plugin = FakePlugin()
         supervisor = survival_mod.SurvivalSupervisor(plugin)

@@ -206,6 +206,12 @@
     "type": "int",
     "default": 30
   },
+  "auto_flee_cooldown_seconds": {
+    "description": "撤离后重新接战冷却（秒）",
+    "type": "int",
+    "default": 15,
+    "hint": "撤离成功后至少等待这么久再主动开战，避免来回拉扯。"
+  },
   "auto_eat_cooldown_seconds": {
     "description": "自动进食冷却（秒）",
     "type": "int",

@@ -35,6 +35,7 @@
   "auto_fight_max_seconds": 25,
   "auto_survive_notify": true,
   "auto_survive_cooldown_seconds": 30,
+  "auto_flee_cooldown_seconds": 15,
   "auto_eat_cooldown_seconds": 15,
   "screenshot_keep_count": 20,
   "shared_memory_enabled": true,

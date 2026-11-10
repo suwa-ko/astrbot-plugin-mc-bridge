@@ -87,6 +87,7 @@ class SurvivalSupervisor:
         self.anchor: dict[str, Any] | None = None
         self.last_action = 0.0
         self.last_eat = 0.0
+        self.retreat_until = 0.0
         self.last_notice = 0.0
         self.last_notice_key = ""
         self.stats = {
@@ -224,6 +225,8 @@ class SurvivalSupervisor:
             if self._task_busy():
                 if nearest is not None and health <= self._flee_health():
                     await self._flee(status, nearest, "当前任务中血量过低")
+                return
+            if nearest is not None and time.monotonic() < self.retreat_until and health > self._flee_health():
                 return
             if nearest is None:
                 self.engaged = False
@@ -417,6 +420,8 @@ class SurvivalSupervisor:
                     pass
             outcome = await self.plugin._auto_flee(status, hostile)
             self.last_action = time.monotonic()
+            self.retreat_until = self.last_action + _num(
+                self._cfg("auto_flee_cooldown_seconds", 15), 15.0)
             self.stats["flees"] += 1
             await self._notify(
                 self._describe(_num(status.get("health"), 0), _num(status.get("food"), 0), [hostile]),
@@ -453,6 +458,9 @@ class SurvivalSupervisor:
             self.last_action = time.monotonic()
             self.stats["fights"] += 1
             outcome = result.get("result") if isinstance(result, dict) else str(result)
+            if outcome in {"retreated", "leash_exceeded", "timeout", "unreachable"}:
+                self.retreat_until = self.last_action + _num(
+                    self._cfg("auto_flee_cooldown_seconds", 15), 15.0)
             detail = result.get("detail") if isinstance(result, dict) else ""
             await self._notify(
                 self._describe(_num(status.get("health"), 0), _num(status.get("food"), 0), hostiles),

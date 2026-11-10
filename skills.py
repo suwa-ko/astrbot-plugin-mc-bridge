@@ -1081,6 +1081,70 @@ class VanillaSkills:
         result["furnace"] = station
         return result
 
+    async def _container_take(self, position, item, limit):
+        """Take at most ``limit`` items from a container into the inventory."""
+        limit = max(0, int(limit))
+        if limit <= 0:
+            return 0
+        before = self.item_count(await self.status(), item)
+        opened = False
+        try:
+            await self._call("container", {"operation": "open", **position}, timeout=10)
+            opened = True
+            await self._take_open_container(item, limit)
+        finally:
+            if opened:
+                try:
+                    await self._call("container", {"operation": "close"}, timeout=5)
+                except Exception:
+                    pass
+        after = self.item_count(await self.status(), item)
+        return max(0, after - before)
+
+    async def _take_open_container(self, item, limit):
+        limit = max(0, int(limit))
+        for _ in range(6):
+            if limit <= 0:
+                break
+            result = await self._call(
+                "move_item",
+                {"item": item, "count": min(64, limit), "direction": "from_container"},
+                timeout=10,
+            )
+            moved = max(0, int(result.get("moved", 0) or 0))
+            if moved <= 0:
+                break
+            limit -= moved
+
+    async def _collect_nearby_smelt_output(self, item, limit, furnace_pos):
+        limit = max(0, int(limit))
+        if limit <= 0:
+            return 0
+        scan = await self._call(
+            "scan_blocks",
+            {"radius": 8, "limit": 8, "block": "minecraft:barrel,minecraft:chest,minecraft:hopper"},
+            timeout=15,
+        )
+        total = 0
+        fx, fy, fz = int(furnace_pos.get("x", 0)), int(furnace_pos.get("y", 0)), int(furnace_pos.get("z", 0))
+        for row in scan.get("blocks") or []:
+            if not isinstance(row, dict):
+                continue
+            pos = {"x": int(row.get("x", 0)), "y": int(row.get("y", 0)), "z": int(row.get("z", 0))}
+            if pos == furnace_pos:
+                continue
+            # Only recover from containers immediately around the furnace
+            # (hopper/barrel output).  Never drain unrelated storage chests.
+            if abs(pos["x"] - fx) > 3 or abs(pos["y"] - fy) > 3 or abs(pos["z"] - fz) > 3:
+                continue
+            try:
+                total += await self._container_take(pos, item, limit - total)
+            except SkillError:
+                continue
+            if total >= limit:
+                break
+        return total
+
     async def smelt_batch(self, furnace_pos, item, count=1, collect_only=False):
         """L1：已知熔炉坐标，有界烧炼并核对产物。"""
         item = str(item or "").strip()
@@ -1113,23 +1177,76 @@ class VanillaSkills:
                 if error:
                     raise SkillError("接近熔炉失败：" + error)
         before = await self._count(item)
+        furnace_pos = {"x": x, "y": y, "z": z}
+        occupied = False
+        opened = False
+        try:
+            await self._call("container", {"operation": "open", **furnace_pos}, timeout=10)
+            opened = True
+            read = await self._call("container", {"operation": "read"}, timeout=10)
+            slots = {
+                int(row.get("slot", -1)): row
+                for row in (read.get("slots") or [])
+                if isinstance(row, dict) and not row.get("player_inventory")
+            }
+            output = slots.get(2) or {}
+            input_slot = slots.get(0) or {}
+            fuel_slot = slots.get(1) or {}
+            occupied = bool(input_slot.get("id") or fuel_slot.get("id") or output.get("id"))
+            if output.get("id") == item and int(output.get("count", 0) or 0) > 0:
+                await self._take_open_container(item, target)
+        except SkillError:
+            occupied = bool(opened)
+        finally:
+            if opened:
+                try:
+                    await self._call("container", {"operation": "close"}, timeout=5)
+                except Exception:
+                    pass
+
+        if occupied:
+            existing = max(0, await self._count(item) - before)
+            existing += await self._collect_nearby_smelt_output(item, target - existing, furnace_pos)
+            after = await self._count(item)
+            produced = max(0, after - before)
+            if produced > 0:
+                return {
+                    "skill": "smelt_batch", "item": item, "requested": target,
+                    "produced": produced, "furnace": furnace_pos,
+                    "note": "collected existing furnace/hopper output",
+                }
+            raise SkillError("熔炉里有未取出的材料或产物，请先清空或稍后再试")
+
         remaining = target
-        while remaining > 0:
-            batch = min(8, remaining)
-            await self._run(
-                "smelt",
-                {"x": x, "y": y, "z": z, "item": item, "count": batch, "collect_only": bool(collect_only)},
-                seconds=170,
-            )
-            remaining -= batch
-            produced = max(0, await self._count(item) - before)
-            self._mark("smelt", "smelting", produced, target, {"item": item})
-            if collect_only:
-                break
+        error = None
+        try:
+            while remaining > 0:
+                batch = min(8, remaining)
+                await self._run(
+                    "smelt",
+                    {"x": x, "y": y, "z": z, "item": item, "count": batch, "collect_only": bool(collect_only)},
+                    seconds=170,
+                )
+                remaining -= batch
+                produced = max(0, await self._count(item) - before)
+                self._mark("smelt", "smelting", produced, target, {"item": item})
+                if collect_only:
+                    break
+        except SkillError as exc:
+            error = exc
+
+        produced = max(0, await self._count(item) - before)
+        if produced < target:
+            produced += await self._collect_nearby_smelt_output(item, target - produced, furnace_pos)
         after = await self._count(item)
+        produced = max(0, after - before)
+        if error is not None and produced < target:
+            raise error
+        if produced < target:
+            raise SkillError(f"烧炼产物不足：{produced}/{target}")
         return {
             "skill": "smelt_batch", "item": item, "requested": target,
-            "produced": max(0, after - before), "furnace": {"x": x, "y": y, "z": z},
+            "produced": produced, "furnace": furnace_pos,
         }
 
     # --------------------------------------------------------------- transfer

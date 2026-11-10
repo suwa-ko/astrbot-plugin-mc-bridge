@@ -9,7 +9,7 @@ desc: |
   记忆升级：地点坐标保存在本地结构化库，模型只看到不透明地点句柄；精确坐标只在主人私聊由本地卡片显示。LivingMemory、嵌入和旧文档检索使用脱敏内容；白名单群永久只读。
 
   需要配合 NeoForge 客户端 Mod 使用，适用于单人世界和允许客户端操作的服务器。
-version: 1.5.4
+version: 1.5.5
 author: suwa-ko
 repo: https://github.com/suwa-ko/astrbot-plugin-mc-bridge
 astrbot_version: ">=4.16,<5"

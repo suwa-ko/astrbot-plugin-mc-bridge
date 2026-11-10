@@ -218,6 +218,14 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
             "distance": 4.0,
             "stands": [{"x": 0, "y": 64, "z": 1, "distance": 3.0}],
         }
+        original_run = plugin._run_operation
+
+        async def run(action, params, seconds=10):
+            if action == "smelt":
+                plugin.inventory.append({"id": "minecraft:iron_ingot", "count": 1, "slot": 10})
+            return await original_run(action, params, seconds)
+
+        plugin._run_operation = run
         result = await skills_mod.VanillaSkills(plugin).smelt_batch(
             {"x": 1, "y": 64, "z": 0}, "minecraft:iron_ingot", 1)
         self.assertEqual(result["skill"], "smelt_batch")

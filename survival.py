@@ -157,6 +157,10 @@ class SurvivalSupervisor:
         tokens = [x.strip().lower() for x in re.split(r"[,，\s]+", str(raw or "")) if x.strip()]
         return tuple(tokens) or DEFAULT_BLACKLIST
 
+    def _ignored_entities(self) -> tuple[str, ...]:
+        raw = self._cfg("auto_survive_ignore_entities", "genshin_nature:luminousseelie")
+        return tuple(x.strip().lower() for x in re.split(r"[,，\s]+", str(raw or "")) if x.strip())
+
     def _poll_interval(self) -> float:
         base = _int(self._cfg("auto_survive_interval", 2), 2, 1, 10)
         capabilities = str(getattr(self.plugin.bridge, "client_info", {}).get("capabilities", ""))
@@ -303,6 +307,8 @@ class SurvivalSupervisor:
             row["distance"] = distance
             row["_type"] = str(raw.get("type") or "").lower()
             row["_name"] = str(raw.get("name") or "").lower()
+            if any(token in (row["_type"] + " " + row["_name"]) for token in self._ignored_entities()):
+                continue
             row["_health"] = _num(raw.get("health"), 20.0)
             row["_los"] = raw.get("line_of_sight", True) is not False
             rows.append(row)

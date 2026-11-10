@@ -451,12 +451,14 @@ public final class BridgeClient {
                     players.add(other.getGameProfile().getName());
                 }
             } else {
+                String typeId = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
                 if (entity instanceof LivingEntity living
                         && entity.getType().getCategory() == MobCategory.MONSTER
+                        && SurvivalRules.hostileType(typeId, BridgeConfig.NON_HOSTILE_ENTITIES.get())
                         && hostiles.size() < 8) {
                     JsonObject hostile = new JsonObject();
                     hostile.addProperty("name", living.getName().getString());
-                    hostile.addProperty("type", BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
+                    hostile.addProperty("type", typeId);
                     hostile.addProperty("line_of_sight",player.hasLineOfSight(living));
                     hostile.addProperty("health", living.getHealth());
                     hostile.addProperty("distance", living.distanceTo(player));
@@ -486,7 +488,10 @@ public final class BridgeClient {
                         player.getBoundingBox().inflate(6.0),
                         e -> e instanceof LivingEntity
                                 && !(e instanceof Player)
-                                && e.getType().getCategory() == MobCategory.MONSTER));
+                                && e.getType().getCategory() == MobCategory.MONSTER
+                                && SurvivalRules.hostileType(
+                                        BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString(),
+                                        BridgeConfig.NON_HOSTILE_ENTITIES.get())));
         candidates.sort(Comparator.comparingDouble(e -> e.distanceToSqr(player)));
         for (Entity entity : candidates) {
             if (!(entity instanceof LivingEntity living)) {

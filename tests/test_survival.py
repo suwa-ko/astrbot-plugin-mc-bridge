@@ -163,6 +163,16 @@ class SurvivalTests(unittest.IsolatedAsyncioTestCase):
         plugin._stop_task_runtime.assert_awaited_once()
         plugin._auto_flee.assert_awaited_once()
 
+    async def test_ignored_modded_entity_is_not_hostile(self):
+        plugin = FakePlugin()
+        supervisor = survival_mod.SurvivalSupervisor(plugin)
+        seelie = {"type": "genshin_nature:luminousseelie", "name": "明亮仙灵", "distance": 3.0}
+        self.assertEqual(supervisor._hostiles(status(hostiles=[seelie])), [])
+        await supervisor.evaluate(status(hostiles=[seelie]))
+        plugin.skills.combat.assert_not_awaited()
+        plugin._auto_flee.assert_not_awaited()
+        self.assertEqual(plugin.notices, [])
+
     async def test_flee_cooldown_prevents_immediate_reengage(self):
         plugin = FakePlugin()
         supervisor = survival_mod.SurvivalSupervisor(plugin)

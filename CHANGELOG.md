@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.4
+
+- 新增实体敌对分类忽略列表：默认把 `genshin_nature:luminousseelie`（明亮仙灵）排除出 hostile、自动战斗、撤离和生存事件。
+- Mod 0.8.1 支持 `nonHostileEntities` 客户端配置；插件侧 `auto_survive_ignore_entities` 同时兜底旧 Mod 的状态列表。
+
 ## 1.5.3
 
 - 修复 `mc_task_start(opcode=smelt)` 被拒绝的问题，兼容映射到 `smelt_item`。

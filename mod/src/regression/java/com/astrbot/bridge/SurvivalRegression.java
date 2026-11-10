@@ -52,5 +52,8 @@ public final class SurvivalRegression {
         require(SurvivalRules.hostileEvent(1,0,"1:0:zombie","",1000,0),"first hostile");
         require(!SurvivalRules.hostileEvent(1,1,"1:0:zombie","1:0:zombie",1500,1000),"hostile throttle");
         require(SurvivalRules.hostileEvent(0,1,"","1:0:zombie",2000,1000),"hostile clear");
+        require(!SurvivalRules.hostileType("genshin_nature:luminousseelie","genshin_nature:luminousseelie"),"modded passive entity excluded");
+        require(SurvivalRules.hostileType("minecraft:zombie","genshin_nature:luminousseelie"),"zombie remains hostile");
+        require(SurvivalRules.hostileType("minecraft:zombie",""),"empty ignore list keeps hostile");
     }
 }

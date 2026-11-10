@@ -31,6 +31,7 @@
   "auto_fight_max_targets": 2,
   "auto_fight_leash_radius": 12,
   "auto_fight_blacklist": "minecraft:creeper,minecraft:wither,minecraft:warden,minecraft:ender_dragon,minecraft:enderman",
+  "auto_survive_ignore_entities": "genshin_nature:luminousseelie",
   "auto_finish_low_target": true,
   "auto_fight_max_seconds": 25,
   "auto_survive_notify": true,

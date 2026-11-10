@@ -184,6 +184,12 @@
     "default": "minecraft:creeper,minecraft:wither,minecraft:warden,minecraft:ender_dragon,minecraft:enderman",
     "hint": "逗号分隔；默认躲避苦力怕、凋灵、监守者、末影龙和末影人。"
   },
+  "auto_survive_ignore_entities": {
+    "description": "不当作敌对生物的实体 ID",
+    "type": "string",
+    "default": "genshin_nature:luminousseelie",
+    "hint": "逗号分隔。某些模组把被动生物注册成 MONSTER；这里列出的实体不会触发自动战斗、撤离或生存通知。"
+  },
   "auto_finish_low_target": {
     "description": "低血时允许补刀残血目标",
     "type": "bool",

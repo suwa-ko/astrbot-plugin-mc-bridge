@@ -52,4 +52,12 @@ final class SurvivalRules {
         if(count==0)return previous>0;
         return previous==0||!key.equals(lastKey)||now-lastAt>=1000;
     }
+    static boolean hostileType(String typeId, String ignoredCsv) {
+        String id = typeId == null ? "" : typeId.trim();
+        if (id.isEmpty()) return true;
+        for (String part : String.valueOf(ignoredCsv == null ? "" : ignoredCsv).split(",")) {
+            if (part.trim().equalsIgnoreCase(id)) return false;
+        }
+        return true;
+    }
 }

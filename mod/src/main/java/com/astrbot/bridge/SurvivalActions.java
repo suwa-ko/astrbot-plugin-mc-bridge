@@ -1197,10 +1197,11 @@ final class SurvivalActions {
         for(int i=0;i<Math.min(limit,entities.size());i++) {
             Entity entity=entities.get(i);JsonObject row=xyz(entity.blockPosition());
             row.addProperty("uuid",entity.getUUID().toString());
-            row.addProperty("type",BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
+            String typeId=BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
+            row.addProperty("type",typeId);
             row.addProperty("name",entity.getName().getString());
             row.addProperty("distance",entity.distanceTo(player));
-            row.addProperty("hostile",entity instanceof Enemy);
+            row.addProperty("hostile",entity instanceof Enemy&&SurvivalRules.hostileType(typeId,BridgeConfig.NON_HOSTILE_ENTITIES.get()));
             if(entity instanceof LivingEntity living){row.addProperty("health",living.getHealth());row.addProperty("max_health",living.getMaxHealth());}
             if(entity instanceof ItemEntity drop){row.add("item",stackInfo(drop.getItem()));row.addProperty("item_count",drop.getItem().getCount());}
             out.add(row);

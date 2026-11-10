@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
 
@@ -46,7 +47,10 @@ final class SurvivalEvents {
                         player.getBoundingBox().inflate(10.0),
                         entity -> entity != player
                                 && entity instanceof LivingEntity
-                                && entity.getType().getCategory() == MobCategory.MONSTER)
+                                && entity.getType().getCategory() == MobCategory.MONSTER
+                                && SurvivalRules.hostileType(
+                                        BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString(),
+                                        BridgeConfig.NON_HOSTILE_ENTITIES.get()))
                 .forEach(entity -> {
                     if (mobs.size() < 8) mobs.add((LivingEntity) entity);
                 });

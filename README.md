@@ -124,6 +124,7 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 | `auto_finish_low_target` | 低血时是否允许对单个残血目标补刀 |
 | `auto_survive_notify` | 自动生存事件是否通知主人私聊 |
 | `auto_flee_cooldown_seconds` | 撤离后重新接战冷却，默认 15 秒 |
+| `auto_survive_ignore_entities` | 不视为敌对生物的实体 ID，默认排除明亮仙灵 |
 | `tool_profile` | `simple` 只暴露常用入口（默认）；`full` 暴露全部工具，适合调试 |
 | `shared_memory_enabled` | 是否允许读取主人授权的 MC 相关聊天记忆 |
 | `shared_memory_group_whitelist` | 允许读取群共享记忆的群号，逗号分隔；留空不开放 |
@@ -135,8 +136,7 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 | 插件 | Mod | 协议 |
 |---|---|---|
 | 1.5.x | 0.8.x | 3 |
-| 1.4.x | 0.7.x | 3 |
-| 1.3.x | 0.7.x | 3 |
+| 1.4.x | 0.7.x | 3 || 1.3.x | 0.7.x | 3 |
 | 1.2.x | 0.7.x | 3 |
 | 1.1.x | 0.7.x | 3 |
 | 1.0.x | 0.6.x | 3 |

@@ -87,6 +87,14 @@ class McSharedMemory:
     def _redact(self, text) -> str:
         return redact_text(text, world_keys=self.known_world_keys)
 
+    def _metadata_dirty(self, meta: dict) -> bool:
+        for key in ("canonical_summary", "persona_summary", "summary", "experience_narration",
+                    "text", "content"):
+            value = str((meta or {}).get(key) or "")
+            if value and (contains_coordinate(value) or has_world_identifier(value)):
+                return True
+        return False
+
     def _sanitize_metadata(self, meta: dict, source_kind: str) -> dict:
         meta = dict(meta or {})
         for key in ("canonical_summary", "persona_summary", "summary", "experience_narration",
@@ -398,7 +406,7 @@ class McSharedMemory:
         never sends it to embedding or rerank.  Date-query output is redacted by
         ``memory_safe_text`` before it reaches a model.
         """
-        setting = f"native_redaction_v4:{self.scope}:{self.persona}"
+        setting = f"native_redaction_v5:{self.scope}:{self.persona}"
         cursor = await self.db.execute("SELECT value FROM settings WHERE key=?", (setting,))
         if await cursor.fetchone():
             self._legacy_redaction_done = True
@@ -427,6 +435,44 @@ class McSharedMemory:
                 meta = {}
             source_kind = str(meta.get("source_kind") or "")
             status = str(meta.get("status") or "active")
+            if (status == "redacted"
+                    and meta.get("redaction_reason") == "legacy_coordinate_or_private_chat"
+                    and not contains_coordinate(text)
+                    and not has_world_identifier(text)
+                    and not self._metadata_dirty(meta)):
+                # The text and summaries were already sanitized.  Re-activate
+                # them so self-shadow/first-person sources can use old docs.
+                meta["status"] = "active"
+                meta["model_safe"] = True
+                meta["redaction_reason"] = "legacy_sanitized"
+                meta["reactivated_at"] = time.time()
+                await engine.db_connection.execute(
+                    "UPDATE documents SET metadata=? WHERE id=?",
+                    (json.dumps(meta, ensure_ascii=False), identifier))
+                if graph_db is not None:
+                    try:
+                        cursor = await graph_db.execute(
+                            "SELECT id,metadata FROM documents "
+                            "WHERE json_extract(metadata,'$.source_memory_id')=?",
+                            (identifier,))
+                        for graph_id, graph_raw in await cursor.fetchall():
+                            try:
+                                graph_meta = (json.loads(graph_raw) if isinstance(graph_raw, str)
+                                              else dict(graph_raw or {}))
+                            except Exception:
+                                graph_meta = {}
+                            graph_meta["status"] = "active"
+                            graph_meta["model_safe"] = True
+                            graph_meta["redaction_reason"] = "legacy_sanitized"
+                            graph_meta["reactivated_at"] = meta["reactivated_at"]
+                            await graph_db.execute(
+                                "UPDATE documents SET metadata=?, updated_at=CURRENT_TIMESTAMP "
+                                "WHERE id=?",
+                                (json.dumps(graph_meta, ensure_ascii=False), int(graph_id)))
+                    except Exception:
+                        pass
+                changed += 1
+                continue
             qq_raw = (source_kind.startswith("qq")
                       and "已脱敏" not in text
                       and not text.startswith("旧QQ私聊MC记忆摘要"))

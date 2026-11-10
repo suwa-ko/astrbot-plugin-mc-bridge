@@ -250,6 +250,25 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         stored = json.loads((await cursor.fetchone())[0])
         self.assertEqual(stored["status"], "active")
 
+    async def test_sanitized_redacted_documents_are_reactivated(self):
+        meta = {
+            "mc_shared": True, "owner_qq": self.service.owner,
+            "session_id": self.service.scope, "persona_id": "MinecraftBot",
+            "source_kind": "game_event", "source_platform": "minecraft",
+            "occurred_at": time.time(), "status": "redacted",
+            "redaction_reason": "legacy_coordinate_or_private_chat",
+            "model_safe": False, "canonical_summary": "到了 [坐标]",
+        }
+        await self.native.execute("INSERT INTO documents(text,metadata) VALUES(?,?)",
+                                  ("到了 [坐标]", json.dumps(meta)))
+        await self.native.commit()
+        await self.service._redact_legacy_native()
+        cursor = await self.native.execute("SELECT metadata FROM documents")
+        stored = json.loads((await cursor.fetchone())[0])
+        self.assertEqual(stored["status"], "active")
+        self.assertTrue(stored["model_safe"])
+        self.assertEqual(stored["redaction_reason"], "legacy_sanitized")
+
     async def test_group_recall_is_read_only_and_isolated(self):
         self.service.config["shared_memory_group_whitelist"] = "111,222"
         now = time.time()

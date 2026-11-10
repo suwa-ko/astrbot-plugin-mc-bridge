@@ -3298,6 +3298,58 @@ class McBridgePlugin(Star):
             return "本轮未提出 Minecraft 请求，未执行"
         return None
 
+    @staticmethod
+    def _replace_prompt_text(value, needle, replacement):
+        pattern = re.compile(rf"(?<!\d){re.escape(needle)}(?!\d)")
+        if isinstance(value, str):
+            return pattern.sub(replacement, value)
+        if isinstance(value, list):
+            return [McBridgePlugin._replace_prompt_text(item, needle, replacement) for item in value]
+        if isinstance(value, dict):
+            return {key: McBridgePlugin._replace_prompt_text(item, needle, replacement)
+                    for key, item in value.items()}
+        text = getattr(value, "text", None)
+        if isinstance(text, str) and pattern.search(text):
+            try:
+                value.text = pattern.sub(replacement, text)
+            except Exception:
+                return value
+        return value
+
+    @filter.on_llm_request(priority=-10001)
+    async def sanitize_prompt_identity(self, event, request):
+        """Remove the owner QQ from prompt data and label the owner explicitly.
+
+        The persona no longer carries a numeric owner id.  The platform still
+        emits the sender id in quote lists and `<system_reminder>`, so replace
+        it here and add a short, non-numeric identity marker for the owner.
+        Non-owner prompts must not inherit the owner's numeric id from quoted
+        history either.
+        """
+        owner_qq = str(self.config.get("shared_memory_owner_qq", "")).strip()
+        if not owner_qq:
+            return
+        try:
+            sender = str(event.get_sender_id())
+        except Exception:
+            sender = ""
+        owner = sender == owner_qq
+        label = "主人" if owner else "用户"
+        system_prompt = str(getattr(request, "system_prompt", "") or "")
+        if owner_qq in system_prompt:
+            request.system_prompt = self._replace_prompt_text(system_prompt, owner_qq, label)
+        contexts = getattr(request, "contexts", None)
+        if isinstance(contexts, list):
+            request.contexts = self._replace_prompt_text(contexts, owner_qq, label)
+        parts = getattr(request, "extra_user_content_parts", None)
+        if isinstance(parts, list):
+            request.extra_user_content_parts = self._replace_prompt_text(parts, owner_qq, label)
+        if owner:
+            marker = "[应用层身份]"
+            current = str(getattr(request, "system_prompt", "") or "")
+            if marker not in current:
+                request.system_prompt = current + f"\n\n{marker} 本轮发言者经可信身份确认是主人。"
+
     @filter.on_llm_request(priority=-10000)
     async def filter_mc_tools(self, event, request):
         original = getattr(request, "func_tool", None)

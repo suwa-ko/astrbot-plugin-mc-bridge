@@ -36,6 +36,61 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         await plugin.inject_shared_mc_memory(object(), object())
         plugin._shared_memory.context_for.assert_not_awaited()
 
+    async def test_owner_qq_is_removed_from_prompt_and_owner_is_labelled(self):
+        plugin = object.__new__(m.McBridgePlugin)
+        plugin.config = {"shared_memory_owner_qq": "123456789"}
+        event = SimpleNamespace(get_sender_id=lambda: "123456789")
+        request = SimpleNamespace(
+            system_prompt="规则\n主人唯一为 QQ 123456789。",
+            contexts=[{"role": "user", "content": "[可引用列表]\n1. 123456789：你好"}],
+            extra_user_content_parts=[m.TextPart(text="<system_reminder>User ID: 123456789, Nickname: 123456789</system_reminder>")],
+        )
+        await plugin.sanitize_prompt_identity(event, request)
+        self.assertNotIn("123456789", request.system_prompt)
+        self.assertIn("[应用层身份]", request.system_prompt)
+        self.assertNotIn("123456789", str(request.contexts))
+        self.assertIn("主人", str(request.contexts))
+        self.assertNotIn("123456789", request.extra_user_content_parts[0].text)
+        self.assertIn("主人", request.extra_user_content_parts[0].text)
+
+    async def test_owner_qq_in_quotes_is_hidden_from_other_users(self):
+        plugin = object.__new__(m.McBridgePlugin)
+        plugin.config = {"shared_memory_owner_qq": "123456789"}
+        event = SimpleNamespace(get_sender_id=lambda: "999")
+        request = SimpleNamespace(
+            system_prompt="",
+            contexts=[{"role": "user", "content": "1. 123456789：你好"}],
+            extra_user_content_parts=[],
+        )
+        await plugin.sanitize_prompt_identity(event, request)
+        self.assertNotIn("123456789", str(request.contexts))
+        self.assertNotIn("主人", str(request.contexts))
+        self.assertIn("用户", str(request.contexts))
+        self.assertNotIn("[应用层身份]", request.system_prompt)
+
+    async def test_identity_sanitizer_is_noop_without_owner_config(self):
+        plugin = object.__new__(m.McBridgePlugin)
+        plugin.config = {}
+        event = SimpleNamespace(get_sender_id=lambda: "123456789")
+        request = SimpleNamespace(system_prompt="用户 123456789", contexts=[], extra_user_content_parts=[])
+        await plugin.sanitize_prompt_identity(event, request)
+        self.assertEqual(request.system_prompt, "用户 123456789")
+
+    async def test_identity_sanitizer_does_not_touch_longer_numbers(self):
+        plugin = object.__new__(m.McBridgePlugin)
+        plugin.config = {"shared_memory_owner_qq": "123456789"}
+        event = SimpleNamespace(get_sender_id=lambda: "999")
+        request = SimpleNamespace(
+            system_prompt="",
+            contexts=[{"role": "user", "content": "订单 1234567890；账号 123456789"}],
+            extra_user_content_parts=[],
+        )
+        await plugin.sanitize_prompt_identity(event, request)
+        text = str(request.contexts)
+        self.assertIn("1234567890", text)
+        self.assertNotIn("账号 123456789", text)
+        self.assertIn("账号 用户", text)
+
     async def test_reminiscing_about_logging_is_not_a_new_logging_order(self):
         for text in ["还记得上次砍树吗", "昨天MC砍了多少原木", "mc回忆昨天的任务"]:
             self.assertTrue(m.McBridgePlugin._is_memory_query(text))

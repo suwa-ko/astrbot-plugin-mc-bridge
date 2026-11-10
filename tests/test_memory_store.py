@@ -151,6 +151,22 @@ class MemoryStoreTests(unittest.TestCase):
         shared = self.remember(kind="waypoint", key="public", privacy="group_shared")
         self.assertTrue(self.store.safe_view(shared, audience="group:111"))
 
+    def test_legacy_migration_does_not_resurrect_forgotten_place(self):
+        legacy = self.root / "poi_retry.json"
+        legacy.write_text(json.dumps({"version": 1, "items": [
+            {"kind": "home_bed", "key": "main", "name": "家床", "world_key": "world-a",
+             "dimension": "minecraft:overworld", "x": 1, "y": 64, "z": 2, "updated_at": time.time()},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(self.store.migrate_legacy_file(legacy), 1)
+        row = self.store.find_places(world_key="world-a", dimension="minecraft:overworld")[0]
+        self.assertTrue(self.store.forget_place(row["public_ref"]))
+        # Simulate a retry with a fresh migration marker: the tombstoned
+        # source_key must still block resurrection.
+        retry = self.root / "poi_retry.json"
+        self.assertEqual(self.store.migrate_legacy_file(retry, migration_key="legacy_poi_retry"), 0)
+        self.assertEqual(self.store.find_places(world_key="world-a", dimension="minecraft:overworld"), [])
+        self.assertEqual(self.store.count_places(include_deleted=True), 1)
+
     def test_forget_uses_tombstone_and_does_not_return_place(self):
         row = self.remember()
         self.assertTrue(self.store.forget_place(row["public_ref"]))
@@ -278,6 +294,18 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("-375", payload)
         self.assertNotIn("world-a", payload)
         self.assertFalse(event.get_extra("_mc_place_cards"))
+
+    async def test_group_cannot_read_private_place_by_forged_ref(self):
+        self.plugin.config["shared_memory_group_whitelist"] = "111"
+        owner_only = self.remember(kind="waypoint", key="secret", privacy="owner_only")
+        other_group = self.remember(kind="waypoint", key="other", privacy="group_only:222")
+        event = Event("MC查这个地点", private=False)
+        event.unified_msg_origin = "default:GroupMessage:111"
+        for ref in (owner_only["public_ref"], other_group["public_ref"]):
+            result = json.loads(await self.plugin.mc_memory(
+                event, operation="get", place_ref=ref))
+            self.assertFalse(result["found"])
+            self.assertNotIn("-375", json.dumps(result, ensure_ascii=False))
 
     async def test_group_cannot_write_memory(self):
         event = Event("MC记住这个点", private=False)

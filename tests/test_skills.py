@@ -206,6 +206,169 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
             [{"item": "minecraft:golden_axe", "count": 1}, {"item": "minecraft:furnace", "count": 2}],
         )
 
+    async def test_tunnel_to_uses_bounded_break_navigation(self):
+        plugin = FakePlugin()
+        plugin.position = {"x": 0, "y": 64, "z": 0}
+
+        async def resolve(x, y, z):
+            return (5, 64, 0), {}
+
+        async def approach(x, y, z, seconds=20, reach=4.0, allow_break=False):
+            plugin.approaches.append((x, y, z, allow_break))
+            plugin.position = {"x": x, "y": y, "z": z}
+            return None
+
+        plugin._resolve_navigation_target = resolve
+        plugin._approach_target = approach
+        result = await skills_mod.VanillaSkills(plugin).tunnel_to({"x": 5, "y": 64, "z": 0})
+        self.assertTrue(result["arrived"])
+        self.assertTrue(plugin.approaches[0][3])
+
+    async def test_return_home_uses_home_memory_and_verifies_arrival(self):
+        plugin = FakePlugin()
+        plugin.position = {"x": 0, "y": 64, "z": 0}
+        memory = FakeMemory()
+        memory.set("home_bed", "main", x=8, y=64, z=0, world_key="test-world", dimension="minecraft:overworld")
+        plugin._poi_memory_for = lambda: memory
+
+        async def move(x, y, z, seconds):
+            plugin.position = {"x": x, "y": y, "z": z}
+
+        plugin._move_and_wait = move
+        result = await skills_mod.VanillaSkills(plugin).return_home()
+        self.assertTrue(result["arrived"])
+        self.assertEqual(result["skill"], "return_home")
+        self.assertFalse(result["ascended"])
+
+    async def test_return_home_prefers_direct_route_when_bed_is_close_above(self):
+        class Underground(FakePlugin):
+            async def _call(self, action, params=None, timeout=10):
+                data = await super()._call(action, params, timeout)
+                if action == "status":
+                    data["sky_visible"] = False
+                return data
+
+        plugin = Underground()
+        plugin.position = {"x": 0, "y": 84, "z": 0}
+        memory = FakeMemory()
+        memory.set("home_bed", "main", x=8, y=94, z=0, world_key="test-world", dimension="minecraft:overworld")
+        plugin._poi_memory_for = lambda: memory
+
+        async def move(x, y, z, seconds):
+            plugin.position = {"x": x, "y": y, "z": z}
+
+        plugin._move_and_wait = move
+        skills = skills_mod.VanillaSkills(plugin)
+        skills._ascend_to_surface = AsyncMock(side_effect=AssertionError("should not ascend"))
+        result = await skills.return_home()
+        self.assertTrue(result["arrived"])
+        self.assertFalse(result["ascended"])
+        self.assertFalse(result["tunneled"])
+        skills._ascend_to_surface.assert_not_awaited()
+
+    async def test_return_home_ascends_when_bed_is_far_above(self):
+        class Underground(FakePlugin):
+            async def _call(self, action, params=None, timeout=10):
+                data = await super()._call(action, params, timeout)
+                if action == "status":
+                    data["sky_visible"] = self.sky_visible
+                return data
+
+        plugin = Underground()
+        plugin.sky_visible = False
+        plugin.position = {"x": 0, "y": 84, "z": 0}
+        memory = FakeMemory()
+        memory.set("home_bed", "main", x=0, y=130, z=0, world_key="test-world", dimension="minecraft:overworld")
+        plugin._poi_memory_for = lambda: memory
+
+        async def move(x, y, z, seconds):
+            plugin.position = {"x": x, "y": y, "z": z}
+
+        plugin._move_and_wait = move
+        skills = skills_mod.VanillaSkills(plugin)
+
+        async def ascend():
+            plugin.sky_visible = True
+            plugin.position = {"x": 0, "y": 120, "z": 0}
+            return True
+
+        skills._ascend_to_surface = ascend
+        result = await skills.return_home()
+        self.assertTrue(result["arrived"])
+        self.assertTrue(result["ascended"])
+
+    async def test_return_home_falls_back_to_bounded_tunnel(self):
+        plugin = FakePlugin()
+        plugin.position = {"x": 0, "y": 84, "z": 0}
+        memory = FakeMemory()
+        memory.set("home_bed", "main", x=8, y=94, z=0, world_key="test-world", dimension="minecraft:overworld")
+        plugin._poi_memory_for = lambda: memory
+
+        async def blocked(x, y, z, seconds):
+            raise skills_mod.SkillError("blocked")
+
+        plugin._move_and_wait = blocked
+        skills = skills_mod.VanillaSkills(plugin)
+        calls = []
+
+        async def tunnel(target, max_distance=32, reach=2.0):
+            calls.append((dict(target), max_distance, reach))
+            return {"arrived": True}
+
+        skills.tunnel_to = tunnel
+        result = await skills.return_home()
+        self.assertTrue(result["arrived"])
+        self.assertTrue(result["tunneled"])
+        self.assertEqual(calls[0][0]["x"], 8)
+
+    async def test_ascend_to_surface_climbs_short_stair_steps(self):
+        class Underground(FakePlugin):
+            def __init__(self):
+                super().__init__()
+                self.sky_visible = False
+
+            async def _call(self, action, params=None, timeout=10):
+                data = await super()._call(action, params, timeout)
+                if action == "status":
+                    data["sky_visible"] = self.sky_visible
+                return data
+
+        plugin = Underground()
+        plugin.position = {"x": 0, "y": 40, "z": 0}
+
+        async def approach(x, y, z, seconds=20, reach=4.0, allow_break=False):
+            plugin.approaches.append((x, y, z, allow_break))
+            plugin.position = {"x": x, "y": y, "z": z}
+            if y >= 46:
+                plugin.sky_visible = True
+            return None
+
+        plugin._approach_target = approach
+        skills = skills_mod.VanillaSkills(plugin)
+        self.assertTrue(await skills._ascend_to_surface())
+        self.assertGreaterEqual(len(plugin.approaches), 3)
+        self.assertTrue(all(call[3] for call in plugin.approaches))
+
+    async def test_tunnel_to_retries_after_a_stalled_navigation_slice(self):
+        plugin = FakePlugin()
+        plugin.position = {"x": 0, "y": 64, "z": 0}
+        attempts = {"count": 0}
+
+        async def resolve(x, y, z):
+            return (8, 64, 0), {}
+
+        async def approach(x, y, z, seconds=20, reach=4.0, allow_break=False):
+            attempts["count"] += 1
+            if attempts["count"] >= 2:
+                plugin.position = {"x": x, "y": y, "z": z}
+            return None
+
+        plugin._resolve_navigation_target = resolve
+        plugin._approach_target = approach
+        result = await skills_mod.VanillaSkills(plugin).tunnel_to({"x": 8, "y": 64, "z": 0})
+        self.assertTrue(result["arrived"])
+        self.assertGreaterEqual(attempts["count"], 2)
+
     async def test_smelt_without_furnace_attempts_crafting(self):
         skills = skills_mod.VanillaSkills(FakePlugin())
         with self.assertRaises(skills_mod.SkillError):

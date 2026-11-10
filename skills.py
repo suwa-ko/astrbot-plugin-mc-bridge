@@ -181,6 +181,7 @@ class VanillaSkills:
             "container_transfer": self.container_transfer,
             "find_and_sleep": self.find_and_sleep,
             "return_home": self.return_home,
+            "tunnel_to": self.tunnel_to,
         }
 
     def validate_params(self, name, params=None):
@@ -1659,21 +1660,219 @@ class VanillaSkills:
         result["skill"] = "container_transfer"
         return result
 
-    async def return_home(self, reach=2.0):
+    @staticmethod
+    def _coords(status):
+        position = status.get("position") if isinstance(status, dict) else None
+        if not isinstance(position, dict):
+            return None
+        try:
+            return (
+                float(position.get("x", 0)),
+                float(position.get("y", 0)),
+                float(position.get("z", 0)),
+            )
+        except (TypeError, ValueError):
+            return None
+
+    async def tunnel_to(self, target_pos, max_distance=32, reach=2.0):
+        """L2: bounded tunnel toward a target stand.
+
+        A single client navigation call carries a small break budget, so the
+        skill restarts navigation against the same resolved target until it
+        arrives, the task budget is exhausted, or it stops making progress.
+        """
+        x, y, z = _position(target_pos)
+        limit = max(1, min(32, int(max_distance)))
+        reach = max(0.5, min(4.0, float(reach)))
+        start = self._coords(await self.status())
+        if start is None:
+            raise SkillError("当前位置不可用，无法挖隧道")
+        if math.dist(start, (float(x), float(y), float(z))) > limit + 1.5:
+            raise SkillError(f"隧道目标超出 {limit} 格安全范围")
+        if abs(start[1] - float(y)) > 12:
+            raise SkillError("隧道目标垂直差超过 12 格，请分段接近或改用 return_home")
+        resolved, info = await self.plugin._resolve_navigation_target(x, y, z)
+        if resolved is None:
+            raise SkillError("隧道目标不可站立：" + str(info))
+        point = tuple(float(value) for value in resolved)
+        if abs(point[1] - start[1]) > 12:
+            raise SkillError("隧道目标垂直差超过 12 格，请分段接近或改用 return_home")
+
+        last_error = None
+        best = math.dist(start, point)
+        stalled = 0
+        for _ in range(8):
+            current = self._coords(await self.status())
+            if current is not None:
+                distance = math.dist(current, point)
+                if distance <= reach + 0.75:
+                    return {
+                        "skill": "tunnel_to",
+                        "target": {"x": int(resolved[0]), "y": int(resolved[1]), "z": int(resolved[2])},
+                        "distance": distance,
+                        "arrived": True,
+                    }
+                if distance < best - 0.5:
+                    best = distance
+                    stalled = 0
+                else:
+                    stalled += 1
+            error = await self.plugin._approach_target(
+                resolved[0], resolved[1], resolved[2],
+                seconds=30,
+                reach=reach,
+                allow_break=True,
+            )
+            if error:
+                last_error = error
+                if "预算" in error or "无路" in error:
+                    raise SkillError("隧道接近失败：" + error)
+            if stalled >= 2:
+                break
+
+        current = self._coords(await self.status())
+        distance = 999.0 if current is None else math.dist(current, point)
+        if distance <= reach + 0.75:
+            return {
+                "skill": "tunnel_to",
+                "target": {"x": int(resolved[0]), "y": int(resolved[1]), "z": int(resolved[2])},
+                "distance": distance,
+                "arrived": True,
+            }
+        detail = f"：{last_error}" if last_error else ""
+        raise SkillError(f"隧道停止后仍未到达目标，距离 {distance:.1f}{detail}")
+
+    def _home_target(self, status):
+        getter = getattr(self.plugin, "_memory_store_for", None)
+        if callable(getter):
+            try:
+                store = getter()
+                scope = self.plugin._memory_scope_for(status)
+                row = (store.latest_place(**scope, kind="home_bed", key="main")
+                       or store.latest_place(**scope, kind="home", key="main"))
+                if row:
+                    view = store.local_view(row)
+                    stand = view.get("stand") or view.get("target")
+                    if stand and stand.get("x") is not None:
+                        return {
+                            "x": int(round(float(stand["x"]))),
+                            "y": int(round(float(stand.get("feet_y", stand["y"])))),
+                            "z": int(round(float(stand["z"]))),
+                            "world_key": view.get("world_key", ""),
+                            "dimension": view.get("dimension", ""),
+                        }
+            except Exception:
+                pass
         memory = self._memory()
-        row = None
-        if memory is not None:
-            row = memory.get("home", "main") or memory.get("home_bed", "main")
-        if not row:
-            raise SkillError("没有记录家")
+        row = (memory.get("home", "main") or memory.get("home_bed", "main")) if memory is not None else None
+        if row:
+            return {
+                "x": int(row["x"]), "y": int(row["y"]), "z": int(row["z"]),
+                "world_key": row.get("world_key", ""), "dimension": row.get("dimension", ""),
+            }
+        return None
+
+    async def _ascend_to_surface(self, max_steps=12):
+        """Climb out of a cave/room by walking short, breaking stair steps."""
+        directions = ((2, 0), (-2, 0), (0, 2), (0, -2))
+        last_error = None
+        for step in range(max_steps):
+            status = await self.status()
+            if status.get("sky_visible", True) is not False:
+                return True
+            current = self._coords(status)
+            if current is None:
+                raise SkillError("当前位置不可用，无法向上挖掘")
+            x = int(math.floor(current[0]))
+            y = int(math.floor(current[1]))
+            z = int(math.floor(current[2]))
+            moved = False
+            step_errors = []
+            # Try one staircase direction, then the opposite side if the first
+            # one is blocked.  More attempts would consume the break budget.
+            for offset in (0, 2):
+                dx, dz = directions[(step + offset) % 4]
+                error = await self.plugin._approach_target(
+                    x + dx, min(320, y + 2), z + dz,
+                    seconds=30, reach=2.0, allow_break=True,
+                )
+                after = await self.status()
+                after_position = self._coords(after)
+                if after_position is not None and after_position[1] > current[1] + 0.5:
+                    moved = True
+                    break
+                if error:
+                    step_errors.append(error)
+                    last_error = error
+            if not moved:
+                detail = f"：{last_error}" if last_error else ""
+                raise SkillError("向上挖掘没有进展" + detail)
+        raise SkillError("未能到达地表")
+
+    async def return_home(self, reach=2.0):
         status = await self.status()
-        if row.get("world_key") and row.get("world_key") != status.get("world_key"):
-            raise SkillError("家的记录属于另一个世界")
-        if row.get("dimension") and row.get("dimension") != status.get("dimension"):
-            raise SkillError("家的记录属于另一个维度")
-        result = await self.return_to({"x": row["x"], "y": row["y"], "z": row["z"]}, reach=reach)
-        result["skill"] = "return_home"
-        return result
+        target = self._home_target(status)
+        if not target:
+            raise SkillError("没有记录家床")
+        if target.get("world_key") and target["world_key"] != status.get("world_key"):
+            raise SkillError("家床记录属于另一个世界")
+        if target.get("dimension") and target["dimension"] != status.get("dimension"):
+            raise SkillError("家床记录属于另一个维度")
+        reach = max(0.5, min(8.0, float(reach)))
+        current = self._coords(status)
+        if current is None:
+            raise SkillError("当前位置不可用，无法回家")
+        target_point = (float(target["x"]), float(target["y"]), float(target["z"]))
+        distance = math.dist(current, target_point)
+        above = target_point[1] - current[1]
+        direct_error = None
+        ascended = False
+
+        # Normal route first when the bed is nearby or we are already outside.
+        # This avoids digging up through a base when the stairs are usable.
+        if status.get("sky_visible", True) is not False or above <= 12:
+            try:
+                result = await self.return_to(target, reach=reach)
+                result["skill"] = "return_home"
+                result["ascended"] = False
+                result["tunneled"] = False
+                return result
+            except SkillError as exc:
+                direct_error = exc
+
+        # Underground with the bed above: climb toward the surface and retry.
+        if status.get("sky_visible", True) is False and above > 2:
+            try:
+                await self._ascend_to_surface()
+                ascended = True
+                result = await self.return_to(target, reach=reach)
+                result["skill"] = "return_home"
+                result["ascended"] = True
+                result["tunneled"] = False
+                return result
+            except SkillError as exc:
+                if direct_error is None:
+                    direct_error = exc
+
+        # Last resort: a bounded tunnel for a nearby bed behind walls/terrain.
+        if distance <= 32 and abs(above) <= 12:
+            try:
+                await self.tunnel_to(target, max_distance=32, reach=reach)
+                return {
+                    "skill": "return_home",
+                    "target": {"x": int(target["x"]), "y": int(target["y"]), "z": int(target["z"])},
+                    "distance": distance,
+                    "arrived": True,
+                    "ascended": ascended,
+                    "tunneled": True,
+                }
+            except SkillError as exc:
+                if direct_error is not None:
+                    raise SkillError(f"回家失败：{direct_error}；隧道失败：{exc}") from exc
+                raise
+        if direct_error is not None:
+            raise direct_error
+        raise SkillError("回家失败：目标太远且无法直接到达")
 
     # ---------------------------------------------------------------- resupply
     async def _ensure_iron_ingots(self, need):

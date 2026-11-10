@@ -2393,7 +2393,7 @@ class McBridgePlugin(Star):
         prompt = (
             f"\n\n你现在通过 Minecraft 客户端账号行动，默认主人游戏名是 {owner_name}。"
             "常用入口：mc_brief 一次查看位置、血量、饥饿、背包摘要、家床和任务；mc_inventory 查看完整背包；"
-            "mc_goto/mc_come/mc_follow/mc_stop 控制移动；mc_mine_at/mc_dig_down/mc_place_at 挖掘或放置；"
+            "mc_goto/mc_come/mc_follow/mc_stop 控制移动；mc_tunnel_to 有界挖掘隧道接近目标；mc_return_home 从地下或远处回家；mc_mine_at/mc_dig_down/mc_place_at 挖掘或放置；"
             "mc_pickup 拾取掉落物；mc_container 打开/读取/点击容器；mc_interact 开关门和按钮；"
             "mc_eat 进食、mc_equip 换装备、mc_attack 攻击、mc_block_context 查看方块和站位；"
             "mc_scan 扫描附近方块/实体；mc_set_respawn 设置重生床；mc_recipes 查配方；"
@@ -2402,7 +2402,7 @@ class McBridgePlugin(Star):
             "多步骤任务用 mc_task_start：opcode 支持 gather(resource,count)、craft(item,count)、smelt(item,count)、"
             "container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、"
             "farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、"
-            "explore(goal,max_seconds,max_distance)、return_to(target_pos)、resupply(...)、trade_for(item,count,radius)；"
+            "explore(goal,max_seconds,max_distance)、return_to(target_pos)、return_home(reach)、tunnel_to(target_pos,max_distance,reach)、resupply(...)、trade_for(item,count,radius)；"
             "params_json 传 JSON 对象，不确定时先用 dry_run=true 预览。"
             "mc_task_status 查看进度、mc_task_cancel 取消任务。"
             "任务提交后：如果返回 inline=true，说明短任务已在本次调用内完成，直接汇报结果；否则只回复“已提交/已开始”并结束本轮，完成或失败会主动通知，不要连续轮询。"
@@ -2597,6 +2597,45 @@ class McBridgePlugin(Star):
         if info.get("adjusted"):
             return f"目标方块不可站立，已改到最近站位 {tx} {ty} {tz}；已加入移动任务，实际到达后才汇报完成"
         return "已加入移动任务，实际到达后才汇报完成"
+
+    @filter.llm_tool(name="mc_tunnel_to")
+    @require_mc_tool("mc_tunnel_to")
+    async def mc_tunnel_to(self, event: AstrMessageEvent, x: int, y: int, z: int,
+                           max_distance: int = 32, reach: float = 2.0):
+        """挖掘一条有界隧道/台阶到附近可站立目标，最多 32 格、垂直差不超过 12 格。
+
+        Args:
+            x(int): 目标 X。
+            y(int): 目标 Y。
+            z(int): 目标 Z。
+            max_distance(int): 最大水平范围 1-32。
+            reach(float): 可接受距离 0.5-4。
+        """
+        if self._queue_skill(
+            f"隧道到 {x} {y} {z}",
+            "tunnel_to",
+            target_pos=[int(x), int(y), int(z)],
+            max_distance=max(1, min(32, int(max_distance))),
+            reach=max(0.5, min(4.0, float(reach))),
+        ):
+            return "已加入隧道接近任务，到达后才汇报完成"
+        return "任务队列已满或正在停止，未执行"
+
+    @filter.llm_tool(name="mc_return_home")
+    @require_mc_tool("mc_return_home")
+    async def mc_return_home(self, event: AstrMessageEvent, reach: float = 2.0):
+        """从地下或远处返回记录的家床；优先走可用路线，无路时会向上挖出地表，近距离还会尝试有界隧道。
+
+        Args:
+            reach(float): 到达家的可接受距离 0.5-8。
+        """
+        if self._queue_skill(
+            "回家",
+            "return_home",
+            reach=max(0.5, min(8.0, float(reach))),
+        ):
+            return "已加入回家任务，实际到达后才汇报完成"
+        return "任务队列已满或正在停止，未执行"
 
     @filter.llm_tool(name="mc_follow")
     @require_mc_tool("mc_follow")

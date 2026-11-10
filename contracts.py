@@ -136,6 +136,7 @@ class L2Opcode(str, Enum):
     TRADE_FOR = "trade_for"
     FIND_AND_SLEEP = "find_and_sleep"
     RETURN_HOME = "return_home"
+    TUNNEL_TO = "tunnel_to"
 
 
 # Kept explicit so the boundary is reviewable and testable.
@@ -170,6 +171,7 @@ L2_ONLY = frozenset({
     "trade_for",
     "find_and_sleep",
     "return_home",
+    "tunnel_to",
 })
 
 KERNEL_ONLY = frozenset({
@@ -312,7 +314,8 @@ L2_SPECS: dict[L2Opcode, L2Spec] = {
     L2Opcode.COMBAT: L2Spec(L2Opcode.COMBAT, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 120),
     L2Opcode.TRADE_FOR: L2Spec(L2Opcode.TRADE_FOR, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.CONTAINER}), 120),
     L2Opcode.FIND_AND_SLEEP: L2Spec(L2Opcode.FIND_AND_SLEEP, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 60),
-    L2Opcode.RETURN_HOME: L2Spec(L2Opcode.RETURN_HOME, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 180),
+    L2Opcode.RETURN_HOME: L2Spec(L2Opcode.RETURN_HOME, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 600),
+    L2Opcode.TUNNEL_TO: L2Spec(L2Opcode.TUNNEL_TO, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 300),
 }
 
 L1_OPCODE_NAMES = frozenset(opcode.value for opcode in L1Opcode)

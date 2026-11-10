@@ -56,6 +56,35 @@ class P01Routing(unittest.TestCase):
             self.assertIn("红床", text)
             self.assertIn("记下了", text)
 
+    def test_mc_short_history_redacts_coordinates(self):
+        plugin = make_plugin()
+        event = Event("mc去坐标")
+        event.unified_msg_origin = "default:FriendMessage:1"
+        key, _ = plugin._mc_history(event)
+        plugin._mc_record_history(key, "mc去坐标 646 89 -166", "到了 646 89 -166")
+        _, text = plugin._mc_history_text(event)
+        self.assertNotIn("646", text)
+        self.assertNotIn("-166", text)
+        self.assertIn("[坐标]", text)
+
+    def test_mc_short_history_sanitizes_existing_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "short_history.json"
+            store = history_mod.ShortHistoryStore(path)
+            key = "default:FriendMessage:1"
+            store.set(key, ["主人：去坐标 -1 2 3", "你：到了 -1 2 3"])
+            plugin = make_plugin()
+            plugin._short_history = store
+            event = Event("mc看看历史")
+            event.unified_msg_origin = key
+            _, text = plugin._mc_history_text(event)
+            self.assertNotIn("-1 2 3", text)
+            self.assertIn("[坐标]", text)
+            reloaded = history_mod.ShortHistoryStore(path)
+            stored = "\n".join(reloaded.get(key))
+            self.assertNotIn("-1 2 3", stored)
+            self.assertIn("[坐标]", stored)
+
     def test_mc_short_history_is_scoped_and_bounded(self):
         plugin = make_plugin()
         event = Event("mc放木头")

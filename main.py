@@ -2856,10 +2856,16 @@ class McBridgePlugin(Star):
         key = self._mc_session_key(event)
         histories = getattr(self, '_mc_histories', None)
         if histories is None:
-            histories = {
-                stored_key: deque(lines, maxlen=20)
-                for stored_key, lines in self._short_history_for().items().items()
-            }
+            histories = {}
+            stored = self._short_history_for().items()
+            for stored_key, lines in stored.items():
+                safe_lines = [redact_text(line) for line in lines]
+                histories[stored_key] = deque(safe_lines, maxlen=20)
+                if safe_lines != list(lines):
+                    try:
+                        self._short_history_for().set(stored_key, safe_lines)
+                    except Exception:
+                        pass
             self._mc_histories = histories
         history = histories.get(key)
         if history is None:
@@ -2870,7 +2876,7 @@ class McBridgePlugin(Star):
     def _mc_history_text(self, event):
         key, history = self._mc_history(event)
         bounded = bound_history(history, history_budget(self.config))
-        text = "\n".join(bounded)
+        text = redact_text("\n".join(bounded))
         event.set_extra('_mc_history_tokens', estimate_tokens(text))
         event.set_extra('_mc_history_lines', len(bounded))
         return key, text
@@ -2878,13 +2884,19 @@ class McBridgePlugin(Star):
     def _mc_record_history(self, key, user, reply):
         histories = getattr(self, '_mc_histories', None)
         if histories is None:
-            histories = {
-                stored_key: deque(lines, maxlen=20)
-                for stored_key, lines in self._short_history_for().items().items()
-            }
+            histories = {}
+            stored = self._short_history_for().items()
+            for stored_key, lines in stored.items():
+                safe_lines = [redact_text(line) for line in lines]
+                histories[stored_key] = deque(safe_lines, maxlen=20)
+                if safe_lines != list(lines):
+                    try:
+                        self._short_history_for().set(stored_key, safe_lines)
+                    except Exception:
+                        pass
             self._mc_histories = histories
         history = histories.setdefault(key, deque(maxlen=20))
-        history.extend([f"主人：{user}", f"你：{reply}"])
+        history.extend([f"主人：{redact_text(user)}", f"你：{redact_text(reply)}"])
         bounded = bound_history(history, history_budget(self.config))
         history.clear()
         history.extend(bounded)

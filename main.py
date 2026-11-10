@@ -4978,10 +4978,16 @@ class McBridgePlugin(Star):
 
             if operation in {"list", "find", "nearby"}:
                 use_kind = "" if kind in {"", "all"} else kind
+                limit = 20
+                if is_group:
+                    try:
+                        limit = max(1, min(4, int(self.config.get("shared_memory_group_max_results", 2) or 2)))
+                    except (TypeError, ValueError):
+                        limit = 2
                 rows = store.find_places(
                     world_key=scope["world_key"], world_instance=scope["world_instance"],
                     dimension=scope["dimension"], kind=use_kind,
-                    query=query or name, audience=audience, limit=20,
+                    query=query or name, audience=audience, limit=limit,
                 )
                 self._queue_place_cards(event, rows)
                 try:
@@ -4992,9 +4998,11 @@ class McBridgePlugin(Star):
                 return json.dumps({
                     "found": bool(items), "items": items,
                     "offline": offline,
-                    "note": ("游戏未连接，按最近保存的地点查询；精确坐标只在主人私聊由本地卡片补充。"
-                             if offline else
-                             "精确坐标不会进入模型；主人私聊会由本地卡片补充坐标。"),
+                    "note": ("群聊只读：精确坐标不公开，也没有本地坐标卡片；不要提示用户看卡片，不要编造坐标。"
+                             if is_group else
+                             ("游戏未连接，按最近保存的地点查询；精确坐标只在主人私聊由本地卡片补充。"
+                              if offline else
+                              "精确坐标不会进入模型；主人私聊会由本地卡片补充坐标。")),
                 }, ensure_ascii=False)
 
             if operation == "history":
@@ -5003,7 +5011,7 @@ class McBridgePlugin(Star):
                     return json.dumps({"found": False, "note": "没有这个地点记录"}, ensure_ascii=False)
                 self._queue_place_cards(event, [row])
                 history = []
-                for item in store.place_history(row["public_ref"]):
+                for item in store.place_history(row["public_ref"], limit=2 if is_group else 20):
                     history.append({
                         "changed_at": time.strftime("%Y-%m-%d %H:%M", time.localtime(item.get("changed_at", 0))),
                         "change_kind": item.get("change_kind", ""),
@@ -5020,7 +5028,9 @@ class McBridgePlugin(Star):
                 self._queue_place_cards(event, [row])
                 return json.dumps({"found": True, "item": store.safe_view(row, audience=audience),
                                    "offline": offline,
-                                   "note": "精确坐标由本地卡片补充，不要自己编造。"}, ensure_ascii=False)
+                                   "note": ("群聊只读：精确坐标不公开，没有本地卡片；不要提示用户看卡片或编造坐标。"
+                                            if is_group else
+                                            "精确坐标由本地卡片补充，不要自己编造。")}, ensure_ascii=False)
 
             if operation == "forget":
                 row = find_row()

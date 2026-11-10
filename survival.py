@@ -420,8 +420,11 @@ class SurvivalSupervisor:
                     pass
             outcome = await self.plugin._auto_flee(status, hostile)
             self.last_action = time.monotonic()
-            self.retreat_until = self.last_action + _num(
-                self._cfg("auto_flee_cooldown_seconds", 15), 15.0)
+            confirmed = "已确认到达" in str(outcome)
+            self.retreat_until = self.last_action + (
+                _num(self._cfg("auto_flee_cooldown_seconds", 15), 15.0)
+                if confirmed else 5.0
+            )
             self.stats["flees"] += 1
             await self._notify(
                 self._describe(_num(status.get("health"), 0), _num(status.get("food"), 0), [hostile]),

@@ -168,6 +168,11 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         event.unified_msg_origin = "default:GroupMessage:222"
         self.assertIn("没有开放", p._tool_denial(event, "mc_memory"))
 
+    async def test_smelt_alias_maps_to_l2_skill(self):
+        spec = m.McBridgePlugin._agent_skill_spec("smelt")
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.opcode.value, "smelt_item")
+
     async def test_survival_notice_route_is_owner_private_only(self):
         p = make_plugin()
         p._shared_memory = SimpleNamespace(owner_session="default:FriendMessage:123")

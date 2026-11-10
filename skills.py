@@ -1093,11 +1093,25 @@ class VanillaSkills:
         if "furnace" not in block and "smoker" not in block:
             raise SkillError("目标方块不是熔炉：" + block)
         stands = [row for row in (context.get("stands") or []) if isinstance(row, dict)]
-        if stands:
+        # The player may already be within interaction reach.  Do not force a
+        # pathfind to a stand that can be behind basement walls; the client
+        # smelt action will open the furnace itself.
+        status = await self.status()
+        position = status.get("position") if isinstance(status.get("position"), dict) else {}
+        vertical = 0.0
+        if stands and position:
             stand = min(stands, key=lambda row: _num(row.get("distance"), 999))
-            error = await self.plugin._approach_target(stand["x"], stand.get("feet_y", stand["y"]), stand["z"], seconds=10, reach=1.5)
-            if error:
-                raise SkillError("接近熔炉失败：" + error)
+            try:
+                vertical = abs(float(position.get("y", 0)) - float(stand.get("feet_y", stand.get("y", 0))))
+            except (TypeError, ValueError):
+                vertical = 0.0
+            if _num(context.get("distance"), 999) > 4.45 or vertical > 1.2:
+                error = await self.plugin._approach_target(
+                    stand["x"], stand.get("feet_y", stand["y"]), stand["z"],
+                    seconds=15, reach=1.5, allow_break=vertical > 1.2,
+                )
+                if error:
+                    raise SkillError("接近熔炉失败：" + error)
         before = await self._count(item)
         remaining = target
         while remaining > 0:

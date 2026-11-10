@@ -926,6 +926,10 @@ class McBridgePlugin(Star):
     @staticmethod
     def _agent_skill_spec(opcode: str):
         opcode = str(opcode or "").strip()
+        # Keep the documented L2 spelling and accept the shorter user-facing
+        # alias used by the tool description and by the model.
+        if opcode == "smelt":
+            opcode = "smelt_item"
         for spec in list(L1_SPECS.values()) + list(L2_SPECS.values()):
             if spec.opcode.value == opcode:
                 return spec

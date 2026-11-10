@@ -211,6 +211,18 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(skills_mod.SkillError):
             await skills.smelt("minecraft:iron_ingot", 1)
 
+    async def test_smelt_skips_reachable_stand_pathing(self):
+        plugin = FakePlugin()
+        plugin.bed_context = {
+            "block": "minecraft:furnace",
+            "distance": 4.0,
+            "stands": [{"x": 0, "y": 64, "z": 1, "distance": 3.0}],
+        }
+        result = await skills_mod.VanillaSkills(plugin).smelt_batch(
+            {"x": 1, "y": 64, "z": 0}, "minecraft:iron_ingot", 1)
+        self.assertEqual(result["skill"], "smelt_batch")
+        self.assertEqual(plugin.approaches, [])
+
     async def test_sleep_without_bed_is_rejected(self):
         skills = skills_mod.VanillaSkills(FakePlugin())
         with self.assertRaisesRegex(skills_mod.SkillError, "床"):

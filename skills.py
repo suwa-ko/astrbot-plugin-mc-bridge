@@ -1843,10 +1843,19 @@ class VanillaSkills:
             await asyncio.sleep(0.65)
         return {"skill": "attack_target", "target": target_text, "attacked": attacked, "result": "timeout"}
 
-    async def combat(self, target="", max_seconds=30, retreat_health=8):
+    async def combat(self, target="", max_seconds=30, retreat_health=8,
+                     hold_health=None, finish_low_target=False, max_targets=0,
+                     leash_radius=0, blacklist=()):
         target_text = str(target or "").strip().lower()
         deadline = time.monotonic() + max(5, min(120, int(max_seconds)))
+        retreat_health = max(1, min(20, int(retreat_health)))
+        hold = (max(retreat_health, min(20, int(hold_health)))
+                if hold_health is not None else None)
+        max_targets = max(0, min(8, int(max_targets or 0)))
+        leash = max(0.0, min(48.0, float(leash_radius or 0)))
+        blocked = tuple(str(token).strip().lower() for token in (blacklist or ()) if str(token).strip())
         attacked = 0
+        anchor = None
         selector = getattr(self.plugin, "_select_best_weapon", None)
         if selector is not None:
             try:
@@ -1856,25 +1865,72 @@ class VanillaSkills:
         while time.monotonic() < deadline:
             status = await self.status()
             health = _num(status.get("health"), 20)
+            position = status.get("position") if isinstance(status.get("position"), dict) else {}
+            if anchor is None and position:
+                anchor = dict(position)
             hostiles = [row for row in (status.get("hostiles") or []) if isinstance(row, dict)]
             if target_text:
-                hostiles = [row for row in hostiles if target_text in str(row.get("name", "")).lower() or target_text in str(row.get("type", "")).lower()]
+                hostiles = [
+                    row for row in hostiles
+                    if target_text in str(row.get("name", "")).lower()
+                    or target_text in str(row.get("type", "")).lower()
+                ]
+            hostiles = [
+                row for row in hostiles
+                if not any(token in (str(row.get("name", "")) + " " + str(row.get("type", ""))).lower()
+                           for token in blocked)
+            ]
             if not hostiles:
                 return {"skill": "combat", "target": target, "attacked": attacked, "result": "no_target"}
             hostile = min(hostiles, key=lambda row: _num(row.get("distance"), 999))
-            if health <= max(1, int(retreat_health)):
+            if health <= retreat_health:
                 outcome = await self.plugin._auto_flee(status, hostile)
-                return {"skill": "combat", "target": target, "attacked": attacked, "result": "retreated", "detail": outcome}
+                return {"skill": "combat", "target": target, "attacked": attacked,
+                        "result": "retreated", "detail": outcome}
+            if hold is not None and health <= hold:
+                target_health = _num(hostile.get("health"), 20)
+                target_distance = _num(hostile.get("distance"), 999)
+                finish = (finish_low_target and len(hostiles) == 1
+                          and target_health <= 2 and target_distance <= 3.2)
+                if not finish:
+                    outcome = await self.plugin._auto_flee(status, hostile)
+                    return {"skill": "combat", "target": target, "attacked": attacked,
+                            "result": "retreated", "detail": outcome}
+            if max_targets and len(hostiles) > max_targets:
+                outcome = await self.plugin._auto_flee(status, hostile)
+                return {"skill": "combat", "target": target, "attacked": attacked,
+                        "result": "retreated", "detail": outcome}
+            if leash and anchor:
+                position = hostile.get("position") or {}
+                try:
+                    distance = math.hypot(
+                        float(position.get("x", 0)) - float(anchor.get("x", 0)),
+                        float(position.get("z", 0)) - float(anchor.get("z", 0)),
+                    )
+                except (TypeError, ValueError):
+                    distance = 0.0
+                if distance > leash:
+                    return {"skill": "combat", "target": target, "attacked": attacked,
+                            "result": "leash_exceeded", "detail": "目标超出战斗半径"}
             if _num(hostile.get("distance"), 99) > 3.2:
                 position = hostile.get("position") or {}
-                error = await self.plugin._approach_target(position.get("x", 0), position.get("y", 64), position.get("z", 0), seconds=6, reach=2.4)
+                error = await self.plugin._approach_target(
+                    position.get("x", 0), position.get("y", 64), position.get("z", 0),
+                    seconds=6, reach=2.4,
+                )
                 if error:
-                    return {"skill": "combat", "target": target, "attacked": attacked, "result": "unreachable", "detail": error}
+                    return {"skill": "combat", "target": target, "attacked": attacked,
+                            "result": "unreachable", "detail": error}
                 continue
-            data = await self._call("attack", {"target": str(hostile.get("type") or hostile.get("name") or "")}, timeout=10)
+            data = await self._call(
+                "attack",
+                {"target": str(hostile.get("type") or hostile.get("name") or "")},
+                timeout=10,
+            )
             attacked += 1
             if data.get("dead"):
-                return {"skill": "combat", "target": target, "attacked": attacked, "result": "killed", "enemy": data.get("target")}
+                return {"skill": "combat", "target": target, "attacked": attacked,
+                        "result": "killed", "enemy": data.get("target")}
             await asyncio.sleep(0.65)
         return {"skill": "combat", "target": target, "attacked": attacked, "result": "timeout"}
 

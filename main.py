@@ -61,6 +61,7 @@ from .short_history import ShortHistoryStore
 from .poi_memory import PoiMemory
 from .memory_store import MemoryStore
 from .privacy import redact_text
+from .survival import SurvivalSupervisor
 
 from .reply_route import ReplyRoute, REPLY_ROUTE, UNSET, event_route, game_route
 from .vision import vision_input
@@ -201,6 +202,7 @@ class BridgeServer:
         chat_priority=None,
         on_chat_overflow=None,
         chat_pending_limit=4,
+        on_survival_event=None,
     ) -> None:
         self.host = host
         self.port = port
@@ -208,6 +210,7 @@ class BridgeServer:
         self.token = token
         self.on_chat = on_chat
         self.on_disconnect = on_disconnect
+        self.on_survival_event = on_survival_event
         self.on_respawn=None
         self.chat_priority=chat_priority
         self.on_chat_overflow=on_chat_overflow
@@ -222,6 +225,7 @@ class BridgeServer:
         self._send_lock = asyncio.Lock()
         self._connection_lock = asyncio.Lock()
         self._chat_jobs: set[asyncio.Task] = set()
+        self._event_jobs: set[asyncio.Task] = set()
         self.client_info: dict[str, Any] = {}
         self.connected_at: float = 0.0
         self.recent_chat: deque[dict[str, Any]] = deque(maxlen=80)
@@ -243,14 +247,21 @@ class BridgeServer:
         if not job.cancelled() and job.exception() is not None:
             logger.warning("[mc-bridge] chat job failed: %s", type(job.exception()).__name__)
 
+    def _finish_event_job(self, job):
+        self._event_jobs.discard(job)
+        if not job.cancelled() and job.exception() is not None:
+            logger.warning("[mc-bridge] survival event failed: %s", type(job.exception()).__name__)
+
     async def stop(self) -> None:
         jobs = list(self._chat_jobs)
         if self._overflow_job is not None and not self._overflow_job.done():jobs.append(self._overflow_job)
+        jobs.extend(job for job in self._event_jobs if not job.done())
         for job in jobs:
             job.cancel()
         if jobs:
             await asyncio.gather(*jobs, return_exceptions=True)
         self._chat_jobs.clear()
+        self._event_jobs.clear()
         await self._fail_pending("bridge stopping")
         if self.ws is not None and not self.ws.closed:
             await self.ws.close()
@@ -345,6 +356,13 @@ class BridgeServer:
             if callback is not None:callback(payload)
         elif typ=='event' and data.get('event')=='task_update':
             pass
+        elif typ == "event" and data.get("event") == "survival":
+            payload = data.get("data")
+            callback = self.on_survival_event
+            if isinstance(payload, dict) and callback is not None and len(self._event_jobs) < 8:
+                job = asyncio.create_task(callback(payload))
+                self._event_jobs.add(job)
+                job.add_done_callback(self._finish_event_job)
         elif typ == "event" and data.get("event") == "chat":
             payload = data.get("data")
             if not isinstance(payload, dict) or self.on_chat is None:
@@ -472,6 +490,7 @@ class McBridgePlugin(Star):
             chat_priority=self._priority_game_chat,
             on_chat_overflow=self._game_chat_overflow,
             chat_pending_limit=self.config.get("game_chat_pending_limit",4),
+            on_survival_event=self._on_survival_event,
         )
         self.bridge.on_respawn=self._respawn_signal
         self._started = False
@@ -479,6 +498,8 @@ class McBridgePlugin(Star):
         self._memory_store = None
         self._memory_world_cache: dict[str, str] = {}
         self._last_status: dict = {}
+        self._last_owner_route = None
+        self._survival: SurvivalSupervisor | None = None
         self._closing = False
         self._manual_movement = False
         self._control_epoch = 0
@@ -1359,7 +1380,15 @@ class McBridgePlugin(Star):
                 return "public_mc"
             return "unknown"
         if platform in {"aiocqhttp", "webchat"} and private:
-            return "owner_private" if self._owner_private(event) else "unknown"
+            if self._owner_private(event):
+                try:
+                    route = event_route(event, self.bridge)
+                    if route is not None:
+                        self._last_owner_route = route
+                except Exception:
+                    pass
+                return "owner_private"
+            return "unknown"
         if platform == "aiocqhttp" and not private:
             try:
                 target = str(event.unified_msg_origin)
@@ -1371,6 +1400,23 @@ class McBridgePlugin(Star):
             if gid and (gid in whitelist or target in whitelist):
                 return "group:" + gid
         return "unknown"
+
+    def _survival_notice_route(self):
+        """Owner-private route for survival notices; never public game chat."""
+        shared = getattr(self, "_shared_memory", None)
+        target = str(getattr(shared, "owner_session", "") or "").strip()
+        if target:
+            if re.fullmatch(r".+:FriendMessage:\d+", target):
+                return ReplyRoute("qq", target=target)
+            if target.startswith("webchat:"):
+                return ReplyRoute("session", target=target)
+        route = getattr(self, "_last_owner_route", None)
+        return route if isinstance(route, ReplyRoute) else None
+
+    async def _on_survival_event(self, payload: dict) -> None:
+        supervisor = getattr(self, "_survival", None)
+        if supervisor is not None:
+            await supervisor.on_event(payload)
 
     def _note_world_status(self, status: dict) -> None:
         if not isinstance(status, dict):
@@ -2191,12 +2237,20 @@ class McBridgePlugin(Star):
                 logger.warning("[mc-bridge] structured memory unavailable: %s", type(memory_error).__name__)
                 self._memory_store = None
             await self._shared_memory.start()
+            self._survival = SurvivalSupervisor(self)
+            await self._survival.start()
         except Exception as exc:
             logger.error(f"[mc-bridge] failed to start WebSocket server: {exc}")
 
     async def terminate(self) -> None:
         self._closing = True
         self._control_epoch += 1
+        if getattr(self, "_survival", None) is not None:
+            try:
+                await self._survival.stop()
+            except Exception:
+                pass
+            self._survival = None
         self._persist_recovery_snapshot()
         active = self._active_task
         self._cancel_active_task()

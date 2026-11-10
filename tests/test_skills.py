@@ -87,6 +87,30 @@ class FakeMemory:
         return row
 
 
+class CombatPlugin(FakePlugin):
+    def __init__(self, statuses, *, dead=True):
+        super().__init__()
+        self.statuses = list(statuses)
+        self.index = 0
+        self.dead = dead
+        self.attacks = []
+        self.fled = []
+
+    async def _call(self, action, params=None, timeout=10):
+        if action == "status":
+            value = self.statuses[min(self.index, len(self.statuses) - 1)]
+            self.index += 1
+            return dict(value)
+        if action == "attack":
+            self.attacks.append(dict(params or {}))
+            return {"target": "Zombie", "dead": self.dead, "health": 0 if self.dead else 12}
+        return await super()._call(action, params, timeout)
+
+    async def _auto_flee(self, status, hostile):
+        self.fled.append(dict(hostile))
+        return "已确认到达撤离落脚点"
+
+
 class SkillTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_skill_is_rejected(self):
         with self.assertRaises(skills_mod.SkillError):
@@ -344,6 +368,69 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
     async def test_combat_without_target_returns_explicitly(self):
         result = await skills_mod.VanillaSkills(FakePlugin()).combat(max_seconds=5)
         self.assertEqual(result["result"], "no_target")
+
+    async def test_combat_holds_until_hard_floor(self):
+        plugin = CombatPlugin([{
+            "position": {"x": 0, "y": 64, "z": 0},
+            "health": 5,
+            "hostiles": [{"type": "minecraft:zombie", "name": "Zombie", "health": 18, "distance": 3.0,
+                          "position": {"x": 1, "y": 64, "z": 0}}],
+        }])
+        result = await skills_mod.VanillaSkills(plugin).combat(
+            max_seconds=5, retreat_health=4, hold_health=6)
+        self.assertEqual(result["result"], "retreated")
+        self.assertTrue(plugin.fled)
+
+    async def test_combat_finishes_low_target_at_hold_health(self):
+        plugin = CombatPlugin([{
+            "position": {"x": 0, "y": 64, "z": 0},
+            "health": 5,
+            "hostiles": [{"type": "minecraft:zombie", "name": "Zombie", "health": 1, "distance": 3.0,
+                          "position": {"x": 1, "y": 64, "z": 0}}],
+        }])
+        result = await skills_mod.VanillaSkills(plugin).combat(
+            max_seconds=5, retreat_health=4, hold_health=6, finish_low_target=True)
+        self.assertEqual(result["result"], "killed")
+        self.assertTrue(plugin.attacks)
+
+    async def test_combat_flees_multiple_targets(self):
+        hostiles = [
+            {"type": "minecraft:zombie", "name": "Zombie", "health": 12, "distance": 3.0,
+             "position": {"x": 1, "y": 64, "z": 0}},
+            {"type": "minecraft:skeleton", "name": "Skeleton", "health": 12, "distance": 4.0,
+             "position": {"x": 2, "y": 64, "z": 0}},
+            {"type": "minecraft:spider", "name": "Spider", "health": 12, "distance": 5.0,
+             "position": {"x": 3, "y": 64, "z": 0}},
+        ]
+        plugin = CombatPlugin([{"position": {"x": 0, "y": 64, "z": 0}, "health": 16, "hostiles": hostiles}])
+        result = await skills_mod.VanillaSkills(plugin).combat(
+            max_seconds=5, retreat_health=4, hold_health=6, max_targets=2)
+        self.assertEqual(result["result"], "retreated")
+        self.assertTrue(plugin.fled)
+
+    async def test_combat_leash_blocks_chasing(self):
+        plugin = CombatPlugin([{
+            "position": {"x": 0, "y": 64, "z": 0},
+            "health": 18,
+            "hostiles": [{"type": "minecraft:zombie", "name": "Zombie", "health": 12, "distance": 5.0,
+                          "position": {"x": 20, "y": 64, "z": 0}}],
+        }])
+        result = await skills_mod.VanillaSkills(plugin).combat(
+            max_seconds=5, retreat_health=4, hold_health=6, leash_radius=12)
+        self.assertEqual(result["result"], "leash_exceeded")
+        self.assertFalse(plugin.attacks)
+
+    async def test_combat_blacklist_returns_no_target(self):
+        plugin = CombatPlugin([{
+            "position": {"x": 0, "y": 64, "z": 0},
+            "health": 18,
+            "hostiles": [{"type": "minecraft:creeper", "name": "Creeper", "health": 20, "distance": 3.0,
+                          "position": {"x": 1, "y": 64, "z": 0}}],
+        }])
+        result = await skills_mod.VanillaSkills(plugin).combat(
+            max_seconds=5, retreat_health=4, hold_health=6, blacklist=("minecraft:creeper",))
+        self.assertEqual(result["result"], "no_target")
+        self.assertFalse(plugin.attacks)
 
     async def test_explore_records_resource_and_stops_without_frontier(self):
         result = await skills_mod.VanillaSkills(FakePlugin()).explore("generic", max_seconds=10)

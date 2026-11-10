@@ -116,7 +116,12 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 | `owner_name` | 默认主人游戏名 |
 | `game_allowed_players` | 允许在游戏公共聊天使用只读状态查询的玩家；动作和私有记忆仍需主人私聊 |
 | `game_chat_names` | 游戏内唤醒机器人的名字 |
-| `auto_survive` | 是否启用低血/危险自动反应 |
+| `auto_survive` | 自动生存总开关（旧字段） |
+| `auto_survive_mode` | `off` / `notify` / `defend` / `full`；默认 `notify`，不会直接自动战斗 |
+| `auto_flee_health` | 自动战斗强制撤离线，默认 4 |
+| `auto_fight_health` / `auto_hold_health` | 开始自卫血量默认 14；战斗中继续坚持下限默认 6 |
+| `auto_eat_food` | 低于该饱食度自动进食，默认 8 |
+| `auto_finish_low_target` | 低血时是否允许对单个残血目标补刀 |
 | `tool_profile` | `simple` 只暴露常用入口（默认）；`full` 暴露全部工具，适合调试 |
 | `shared_memory_enabled` | 是否允许读取主人授权的 MC 相关聊天记忆 |
 | `shared_memory_group_whitelist` | 允许读取群共享记忆的群号，逗号分隔；留空不开放 |
@@ -127,6 +132,7 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 
 | 插件 | Mod | 协议 |
 |---|---|---|
+| 1.5.x | 0.8.x | 3 |
 | 1.4.x | 0.7.x | 3 |
 | 1.3.x | 0.7.x | 3 |
 | 1.2.x | 0.7.x | 3 |

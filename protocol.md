@@ -73,6 +73,33 @@ AstrBot 插件与 NeoForge 客户端 Mod 之间的 WebSocket 协议。
 
 用于游戏聊天、断线、重生等事件。插件会校验连接 id、玩家 UUID 和允许玩家列表。
 
+### 生存事件
+
+Mod 0.8.0 / 插件 1.5.0 起，客户端还会在血量、饱食、敌人变化时发送轻量事件：
+
+```json
+{
+  "type": "event",
+  "event": "survival",
+  "data": {
+    "seq": 12,
+    "kind": "hostile",
+    "health": 16.0,
+    "max_health": 20.0,
+    "food": 7,
+    "saturation": 2.5,
+    "dead": false,
+    "hostiles": [
+      {"type": "minecraft:zombie", "name": "Zombie", "distance": 3.2, "line_of_sight": true, "health": 18.0}
+    ]
+  }
+}
+```
+
+`kind` 为 `damage`、`health`、`food`、`hostile`、`clear` 或 `death`。
+事件只带判断所需字段，不带精确坐标；插件收到后会按需查询完整 `status` 再执行动作。
+旧 Mod 没有 `survival_events` 能力时，插件退回轮询；旧插件会忽略未知事件。
+
 ## 状态与安全
 
 - `status` 返回位置、维度、世界 key、血量、饥饿、任务占用、屏幕、附近敌对生物、路径反馈和库存摘要。
@@ -84,6 +111,7 @@ AstrBot 插件与 NeoForge 客户端 Mod 之间的 WebSocket 协议。
 
 | 插件 | Mod | 协议 |
 |---|---|---|
+| 1.5.x | 0.8.x | 3 |
 | 1.1.x | 0.7.x | 3 |
 | 1.0.x | 0.6.x | 3 |
 

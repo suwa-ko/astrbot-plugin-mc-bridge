@@ -43,6 +43,7 @@ public final class BridgeClient {
     private CompletableFuture<Void> sendTail = CompletableFuture.completedFuture(null);
     private final AtomicLong actionGeneration = new AtomicLong();
     private final SurvivalActions survival = new SurvivalActions(this::sendResult, () -> this.socket, actionGeneration::get);
+    private final SurvivalEvents survivalEvents = new SurvivalEvents();
     private String pendingCapture;
     private WebSocket captureOrigin;
     private long captureDeadline;
@@ -101,6 +102,14 @@ public final class BridgeClient {
         }
         normalAutoRespawn();
         survival.tick();
+        JsonObject survivalEvent = survivalEvents.tick(Minecraft.getInstance().player);
+        if (survivalEvent != null) {
+            JsonObject envelope = new JsonObject();
+            envelope.addProperty("type", "event");
+            envelope.addProperty("event", "survival");
+            envelope.add("data", survivalEvent);
+            send(envelope);
+        }
         if (!started) {
             start();
         }
@@ -221,10 +230,10 @@ public final class BridgeClient {
             JsonObject hello = new JsonObject();
             hello.addProperty("type", "hello");
             hello.addProperty("client", "astrbot-bridge");
-            hello.addProperty("version", "0.7.1");
+            hello.addProperty("version", "0.8.0");
             hello.addProperty("local_collect_resources","logs,stone,coal,iron,wheat");
             hello.addProperty("protocol", 3);
-            hello.addProperty("capabilities", "inventory,equip,unequip_armor,craft,workbench,scan,mine_block,sleep,navigate,operation,knowledge,sense,station,smelt,interact,pickup,fresh_capture,background_render,look_angles,station_recovery,manual_craft,normal_respawn,normal_auto_respawn,path_feedback,collision_navigation,move_item,trade,ride,dismount,wake,plant,till,jump,dig_down,block_context,get_menu,interact_block,release_use,mine_below,align,use_bonemeal,ladder_assist,navigation_break_budget");
+            hello.addProperty("capabilities", "inventory,equip,unequip_armor,craft,workbench,scan,mine_block,sleep,navigate,operation,knowledge,sense,station,smelt,interact,pickup,fresh_capture,background_render,look_angles,station_recovery,manual_craft,normal_respawn,normal_auto_respawn,path_feedback,collision_navigation,move_item,trade,ride,dismount,wake,plant,till,jump,dig_down,block_context,get_menu,interact_block,release_use,mine_below,align,use_bonemeal,ladder_assist,navigation_break_budget,survival_events");
             Minecraft mc = Minecraft.getInstance();
             hello.addProperty(
                     "player",
@@ -718,6 +727,7 @@ public final class BridgeClient {
         if (socket != origin) return;
         socket = null;
         actionGeneration.incrementAndGet();
+        survivalEvents.reset();
         scheduleReconnect();
         Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> {

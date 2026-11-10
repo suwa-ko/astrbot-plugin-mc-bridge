@@ -44,5 +44,13 @@ public final class SurvivalRegression {
         require(SurvivalRules.craftSlot(3,2,3)==5,"shaped recipe width preserves empty columns");
         require(SurvivalRules.craftSlot(3,3,8)==9,"last crafting table cell");
         try{SurvivalRules.craftSlot(2,3,0);throw new AssertionError("oversize recipe accepted");}catch(IllegalArgumentException expected){}
+        require(SurvivalRules.damageEvent(12,18,1000,0),"damage trigger");
+        require(!SurvivalRules.damageEvent(12,18,100,0),"damage throttle");
+        require(!SurvivalRules.damageEvent(18,12,1000,0),"heal is not damage");
+        require(SurvivalRules.foodEvent(7,8,1000,0)&&SurvivalRules.foodEvent(9,8,1000,0),"food threshold change");
+        require(!SurvivalRules.foodEvent(19,20,2000,0),"food change outside threshold");
+        require(SurvivalRules.hostileEvent(1,0,"1:0:zombie","",1000,0),"first hostile");
+        require(!SurvivalRules.hostileEvent(1,1,"1:0:zombie","1:0:zombie",1500,1000),"hostile throttle");
+        require(SurvivalRules.hostileEvent(0,1,"","1:0:zombie",2000,1000),"hostile clear");
     }
 }

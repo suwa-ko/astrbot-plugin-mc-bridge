@@ -41,4 +41,15 @@ final class SurvivalRules {
         if((grid!=2&&grid!=3)||width<1||width>grid||ingredient<0||ingredient>=width*grid)throw new IllegalArgumentException("invalid crafting dimensions");
         return 1+(ingredient/width)*grid+ingredient%width;
     }
+    static boolean damageEvent(int health,int previous,long now,long lastEmit) {
+        return health>=0&&previous>=0&&health<previous&&now-lastEmit>=250;
+    }
+    static boolean foodEvent(int food,int previous,long now,long lastEmit) {
+        return food>=0&&previous>=0&&food!=previous&&(food<=10||previous<=10)&&now-lastEmit>=1000;
+    }
+    static boolean hostileEvent(int count,int previous,String key,String lastKey,long now,long lastAt) {
+        if(count<0||key==null||lastKey==null)return false;
+        if(count==0)return previous>0;
+        return previous==0||!key.equals(lastKey)||now-lastAt>=1000;
+    }
 }

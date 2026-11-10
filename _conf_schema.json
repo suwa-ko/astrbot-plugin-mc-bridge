@@ -115,30 +115,101 @@
     "hint": "空格分隔，传给 Baritone 的 #mine 命令。"
   },
   "auto_survive": {
-    "description": "启用自动生存",
+    "description": "启用自动生存（旧开关）",
     "type": "bool",
     "default": true,
-    "hint": "附近有怪自动打，低血先撤，饿了自动吃。"
+    "hint": "作为总开关保留；实际行为由 auto_survive_mode 决定。新配置默认只报告，不会直接自动战斗。"
+  },
+  "auto_survive_mode": {
+    "description": "自动生存模式",
+    "type": "string",
+    "default": "notify",
+    "hint": "off=关闭；notify=只检测并通知；defend=自动进食/撤离/自卫；full=保留给后续主动清怪。"
   },
   "auto_survive_interval": {
     "description": "自动生存轮询间隔（秒）",
     "type": "int",
-    "default": 2
+    "default": 2,
+    "hint": "没有事件能力时的兜底轮询；有 survival_events 能力时会自动放宽到至少 5 秒。"
   },
   "auto_flee_health": {
-    "description": "低于这个血量（0-20）自动撤离",
+    "description": "强制撤离血量（0-20）",
     "type": "int",
-    "default": 8
+    "default": 4,
+    "hint": "自动战斗的硬撤退线；不是普通交战撤退线。手动 mc_combat 仍使用自己的 retreat_health。"
+  },
+  "auto_fight_health": {
+    "description": "开始自卫战斗的最低血量（0-20）",
+    "type": "int",
+    "default": 14,
+    "hint": "低于这个血量不主动开战；已经进入战斗后按 auto_hold_health 继续。"
+  },
+  "auto_hold_health": {
+    "description": "战斗中继续坚持的血量下限（0-20）",
+    "type": "int",
+    "default": 6,
+    "hint": "血量高于该值继续战斗；低于该值默认撤离，目标残血时可按 auto_finish_low_target 补刀。"
   },
   "auto_eat_food": {
     "description": "低于这个饱食度（0-20）自动吃东西",
     "type": "int",
     "default": 8
   },
+  "auto_eat_health_food": {
+    "description": "受伤时补到多少饱食度",
+    "type": "int",
+    "default": 18,
+    "hint": "血量未满且饱食低于该值时优先进食，保证自然回血。"
+  },
   "auto_attack_range": {
     "description": "自动迎战距离（格）",
     "type": "int",
     "default": 6
+  },
+  "auto_fight_max_targets": {
+    "description": "自卫战斗最多同时面对几只敌人",
+    "type": "int",
+    "default": 2,
+    "hint": "超过后优先撤离，避免被围。"
+  },
+  "auto_fight_leash_radius": {
+    "description": "自动战斗拴绳半径（格）",
+    "type": "int",
+    "default": 12,
+    "hint": "不追击到离战斗起点超过该距离的目标。"
+  },
+  "auto_fight_blacklist": {
+    "description": "自动战斗不主动攻击的生物",
+    "type": "string",
+    "default": "minecraft:creeper,minecraft:wither,minecraft:warden,minecraft:ender_dragon,minecraft:enderman",
+    "hint": "逗号分隔；默认躲避苦力怕、凋灵、监守者、末影龙和末影人。"
+  },
+  "auto_finish_low_target": {
+    "description": "低血时允许补刀残血目标",
+    "type": "bool",
+    "default": true,
+    "hint": "只对 2 血以内、3.2 格内的单个目标生效；否则按撤离处理。"
+  },
+  "auto_fight_max_seconds": {
+    "description": "单次自动战斗最长时间（秒）",
+    "type": "int",
+    "default": 25,
+    "hint": "5-120 秒；超时后停止追击。"
+  },
+  "auto_survive_notify": {
+    "description": "自动生存事件通知主人私聊",
+    "type": "bool",
+    "default": true
+  },
+  "auto_survive_cooldown_seconds": {
+    "description": "同类生存事件通知冷却（秒）",
+    "type": "int",
+    "default": 30
+  },
+  "auto_eat_cooldown_seconds": {
+    "description": "自动进食冷却（秒）",
+    "type": "int",
+    "default": 15
   },
   "screenshot_keep_count": {
     "description": "截图最多保留张数",

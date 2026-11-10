@@ -168,6 +168,18 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         event.unified_msg_origin = "default:GroupMessage:222"
         self.assertIn("没有开放", p._tool_denial(event, "mc_memory"))
 
+    async def test_survival_notice_route_is_owner_private_only(self):
+        p = make_plugin()
+        p._shared_memory = SimpleNamespace(owner_session="default:FriendMessage:123")
+        route = p._survival_notice_route()
+        self.assertEqual(route.channel, "qq")
+        self.assertEqual(route.target, "default:FriendMessage:123")
+        p._shared_memory = SimpleNamespace(owner_session="")
+        p._last_owner_route = m.ReplyRoute("session", target="webchat:owner")
+        self.assertEqual(p._survival_notice_route().channel, "session")
+        p._last_owner_route = None
+        self.assertIsNone(p._survival_notice_route())
+
     async def test_stopped_event_cannot_restart_movement(self):
         p = make_plugin()
         p._enqueue_tasks = Mock(return_value=True)
@@ -791,6 +803,22 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         jobs = list(bridge._chat_jobs)
         await bridge.stop()
         self.assertTrue(all(job.cancelled() for job in jobs))
+
+    async def test_survival_event_is_dispatched_without_touching_chat_jobs(self):
+        seen = []
+
+        async def callback(payload):
+            seen.append(payload)
+
+        bridge = m.BridgeServer("127.0.0.1", 0, "/ws", "synthetic", on_survival_event=callback)
+        await bridge._on_message(json.dumps({
+            "type": "event", "event": "survival",
+            "data": {"seq": 1, "kind": "hostile", "health": 12, "hostiles": []},
+        }))
+        await asyncio.sleep(0)
+        self.assertEqual(seen, [{"seq": 1, "kind": "hostile", "health": 12, "hostiles": []}])
+        self.assertEqual(len(bridge._chat_jobs), 0)
+        await bridge.stop()
 
     async def test_reconnect_does_not_cancel_new_request(self):
         bridge = m.BridgeServer("127.0.0.1", 0, "/ws", "synthetic")

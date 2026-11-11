@@ -141,7 +141,7 @@
   "auto_resume_disconnect_seconds": {
     "description": "断线后允许自动续跑的时间窗口（秒）",
     "type": "int",
-    "default": 120,
+    "default": 300,
     "hint": "超过这个时间不自动恢复，避免隔很久突然继续旧任务。"
   },
   "auto_flee_health": {
@@ -316,6 +316,12 @@
     "type": "int",
     "default": 8,
     "hint": "1-64；超过预算的挖掘会被拒绝。"
+  },
+  "break_budget_per_mining_action": {
+    "description": "采矿/隧道任务单次寻路最多破坏的方块数",
+    "type": "int",
+    "default": 32,
+    "hint": "1-64；只对 mine_ore/gather/tunnel_to/return_home 生效，普通动作仍用 break_budget_per_action。"
   },
   "break_budget_per_task": {
     "description": "单个任务最多破坏的方块数",

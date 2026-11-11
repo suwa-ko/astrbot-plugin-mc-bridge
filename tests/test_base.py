@@ -330,6 +330,19 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未在", payload["note"])
         self.assertFalse(item.suppress_notify)
 
+    def test_mining_navigation_uses_larger_per_action_budget(self):
+        p = make_plugin()
+        p.config["break_budget_per_mining_action"] = 32
+        p._break_policy_for = Mock(return_value=SimpleNamespace(
+            per_action=8,
+            ensure_task=Mock(),
+            remaining_task_budget=lambda: 640,
+        ))
+        p._task_current = SimpleNamespace(task_id="t1", target="mine_ore")
+        self.assertEqual(p._navigation_break_budget(), 32)
+        p._task_current.target = "goto"
+        self.assertEqual(p._navigation_break_budget(), 8)
+
     def test_break_budget_matches_task_type(self):
         p = make_plugin()
         p.config.update({

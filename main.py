@@ -927,7 +927,16 @@ class McBridgePlugin(Star):
         chain = getattr(self, "_task_chain", None)
         if event is None or not isinstance(chain, dict) or chain.get("event") is not event:
             return ""
-        return str(chain.get("last") or "")
+        last = str(chain.get("last") or "")
+        if last:
+            try:
+                task = self._scheduler_for().get(last)
+                if task is not None and str(getattr(task, "state", "")) in {"failed", "cancelled"}:
+                    self._task_chain = None
+                    return ""
+            except Exception:
+                pass
+        return last
 
     def _remember_task_chain(self, task_id: str) -> None:
         event = CURRENT_EVENT.get()
@@ -1747,7 +1756,7 @@ class McBridgePlugin(Star):
         try:
             self._break_policy_for().add_around(
                 f"container-{int(x)}-{int(y)}-{int(z)}", int(x), int(y), int(z),
-                radius=2, kind="container", dimension=dimension,
+                radius=0, kind="container", dimension=dimension,
             )
         except Exception:
             pass
@@ -3658,9 +3667,9 @@ class McBridgePlugin(Star):
         if not bool(self.config.get("auto_resume_after_disconnect", True)):
             return
         try:
-            max_age = float(self.config.get("auto_resume_disconnect_seconds", 120) or 120)
+            max_age = float(self.config.get("auto_resume_disconnect_seconds", 300) or 300)
         except (TypeError, ValueError):
-            max_age = 120.0
+            max_age = 300.0
         if time.time() - float(pending.get("at", 0) or 0) > max_age:
             return
         if self._resume_attempts >= 2:
@@ -3785,7 +3794,15 @@ class McBridgePlugin(Star):
             policy = self._break_policy_for()
             task_id = str(getattr(getattr(self, "_task_current", None), "task_id", "") or "direct")
             policy.ensure_task(task_id)
-            return min(max(1, int(policy.per_action)), max(0, int(policy.remaining_task_budget())))
+            per_action = int(policy.per_action)
+            opcode = str(getattr(getattr(self, "_task_current", None), "target", "") or "")
+            if opcode in {"mine_ore", "return_home", "tunnel_to", "gather"}:
+                try:
+                    mining_action = int(self.config.get("break_budget_per_mining_action", 32) or 32)
+                except (TypeError, ValueError):
+                    mining_action = 32
+                per_action = max(per_action, mining_action)
+            return min(max(1, per_action), max(0, int(policy.remaining_task_budget())))
         except Exception:
             return 0
 
@@ -4802,15 +4819,24 @@ class McBridgePlugin(Star):
         err = self._err(data)
         if err:
             return err
-        rows = [row for row in (data.get("entities") or []) if isinstance(row.get("item"), dict)]
         wanted = str(item or "").strip()
-        if wanted:
-            rows = [
-                row for row in rows
-                if wanted == str((row.get("item") or {}).get("id") or "")
-                or wanted == str((row.get("item") or {}).get("name") or "")
-                or wanted in str(row.get("name") or "")
-            ]
+        rows = []
+        for attempt in range(3):
+            rows = [row for row in (data.get("entities") or []) if isinstance(row.get("item"), dict)]
+            if wanted:
+                rows = [
+                    row for row in rows
+                    if wanted == str((row.get("item") or {}).get("id") or "")
+                    or wanted == str((row.get("item") or {}).get("name") or "")
+                    or wanted in str(row.get("name") or "")
+                ]
+            if rows:
+                break
+            if attempt < 2:
+                await asyncio.sleep(0.35)
+                data = await self._call("scan_entities", {"radius": radius, "limit": 32}, timeout=10)
+                if self._err(data):
+                    break
         if not rows:
             return "附近没有匹配的掉落物"
         picked, errors = [], []

@@ -365,23 +365,65 @@ class VanillaSkills:
         return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if str(row.get("id", "")) == item)
 
     async def _pickup_near(self, x, y, z, resource, radius=5):
-        data = await self._call("scan_entities", {"radius": radius, "limit": 32}, timeout=10)
-        rows = [row for row in (data.get("entities") or []) if isinstance(row.get("item"), dict)]
-        for row in rows:
-            item_id = str((row.get("item") or {}).get("id") or "")
-            if not _matches_resource(item_id, resource):
-                continue
-            try:
-                if _num(row.get("distance"), 99) > 2.2:
-                    error = await self.plugin._approach_target(row.get("x", x), row.get("y", y), row.get("z", z), seconds=20, reach=1.8)
-                    if error:
-                        continue
+        for attempt in range(3):
+            data = await self._call("scan_entities", {"radius": radius, "limit": 32}, timeout=10)
+            rows = [row for row in (data.get("entities") or []) if isinstance(row.get("item"), dict)]
+            rows = [
+                row for row in rows
+                if _matches_resource(str((row.get("item") or {}).get("id") or ""), resource)
+            ]
+            if not rows:
+                if attempt < 2:
+                    await asyncio.sleep(0.35)
+                    continue
+                return
+            for row in rows:
+                item_id = str((row.get("item") or {}).get("id") or "")
                 try:
-                    await self._run("pickup", {"item": item_id, "entity_uuid": str(row.get("uuid") or "")}, seconds=4)
+                    if _num(row.get("distance"), 99) > 2.2:
+                        error = await self.plugin._approach_target(
+                            row.get("x", x), row.get("y", y), row.get("z", z),
+                            seconds=20, reach=1.8,
+                        )
+                        if error:
+                            continue
+                    try:
+                        await self._run(
+                            "pickup",
+                            {"item": item_id, "entity_uuid": str(row.get("uuid") or "")},
+                            seconds=4,
+                        )
+                    except Exception:
+                        continue
                 except Exception:
                     continue
+            return
+
+    async def _expose_block(self, node):
+        """Break adjacent solid blocks so a hidden ore becomes reachable."""
+        try:
+            x, y, z = int(node["x"]), int(node["y"]), int(node["z"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        changed = False
+        for dx, dy, dz in (
+            (1, 0, 0), (-1, 0, 0), (0, 1, 0),
+            (0, 0, 1), (0, 0, -1),
+        ):
+            px, py, pz = x + dx, y + dy, z + dz
+            try:
+                context = await self._call("block_context", {"x": px, "y": py, "z": pz}, timeout=6)
             except Exception:
                 continue
+            block = str(context.get("block") or "")
+            if not block or block.endswith("air") or "water" in block or "lava" in block:
+                continue
+            try:
+                await self._run("mine_at", {"x": px, "y": py, "z": pz}, seconds=8)
+                changed = True
+            except SkillError:
+                continue
+        return changed
 
     # ------------------------------------------------------------------- L1
     async def equip_best(self, tool_type="pickaxe"):
@@ -743,8 +785,22 @@ class VanillaSkills:
                             node["x"], node["y"], node["z"], seconds=20, reach=2.5, allow_break=True
                         )
                 if error:
+                    if await self._expose_block(node):
+                        try:
+                            await self._run(
+                                "mine_at",
+                                {"x": int(node["x"]), "y": int(node["y"]), "z": int(node["z"])},
+                                seconds=12,
+                            )
+                            await self._pickup_near(
+                                int(node["x"]), int(node["y"]), int(node["z"]), resource,
+                            )
+                        except Exception:
+                            pass
+                        if self.item_count(await self.status(), resource) - baseline > 0:
+                            continue
                     failed += 1
-                    if failed >= 5:
+                    if failed >= 12:
                         raise SkillError("无法接近目标：" + error)
                     continue
             for clear in (stand.get("clear") or [])[:8]:
@@ -760,10 +816,25 @@ class VanillaSkills:
                 await self._pickup_near(int(node["x"]), int(node["y"]), int(node["z"]), resource)
                 if self.item_count(await self.status(), resource) - baseline > 0:
                     continue
+                if await self._expose_block(node):
+                    try:
+                        await self._run(
+                            "mine_at",
+                            {"x": int(node["x"]), "y": int(node["y"]), "z": int(node["z"])},
+                            seconds=12,
+                        )
+                        await self._pickup_near(
+                            int(node["x"]), int(node["y"]), int(node["z"]), resource,
+                        )
+                    except Exception:
+                        pass
+                    if self.item_count(await self.status(), resource) - baseline > 0:
+                        continue
                 failed += 1
-                if failed >= 5:
+                if failed >= 12:
                     raise SkillError("挖掘连续失败：" + str(exc))
                 continue
+            await self._pickup_near(int(node["x"]), int(node["y"]), int(node["z"]), resource)
             await asyncio.sleep(0.3)
             await self._pickup_near(int(node["x"]), int(node["y"]), int(node["z"]), resource)
             gained = self.item_count(await self.status(), resource) - baseline
@@ -1676,6 +1747,36 @@ class VanillaSkills:
             setattr(self.plugin, "_auto_eat_requested", False)
             return False
 
+    async def _place_underfoot(self, item):
+        """Try to pillar-place one block under the player while jumping."""
+        item = str(item or "").strip()
+        if not item:
+            return False
+        for _ in range(6):
+            status = await self.status()
+            current = self._coords(status)
+            if current is None:
+                return False
+            x = int(math.floor(current[0]))
+            y = int(math.floor(current[1]))
+            z = int(math.floor(current[2]))
+            try:
+                await self._run("jump", {}, seconds=3)
+                await self._run(
+                    "place_at",
+                    {"x": x, "y": y, "z": z, "item": item},
+                    seconds=4,
+                )
+            except SkillError:
+                await asyncio.sleep(0.4)
+                continue
+            await asyncio.sleep(0.4)
+            after = await self.status()
+            after_position = self._coords(after)
+            if after_position is not None and after_position[1] > current[1] + 0.5:
+                return True
+        return False
+
     async def _ensure_pickaxe(self, min_remaining=40):
         """Return True when a pickaxe with enough durability is available."""
         status = await self.status()
@@ -1697,6 +1798,14 @@ class VanillaSkills:
                 await self.craft("minecraft:iron_pickaxe", 1)
                 return True
             except SkillError:
+                # A 1x2 shaft has no room to place a crafting table normally.
+                # Pillar-place one under the player, then retry.
+                if await self._place_underfoot("minecraft:crafting_table"):
+                    try:
+                        await self.craft("minecraft:iron_pickaxe", 1)
+                        return True
+                    except SkillError:
+                        return False
                 return False
         return False
 
@@ -2120,6 +2229,39 @@ class VanillaSkills:
                 return False
         return False
 
+    async def _unprotect_bed_region(self, target):
+        """A bed accidentally registered as a container must not block entry."""
+        getter = getattr(self.plugin, "_break_policy_for", None)
+        if not callable(getter):
+            return
+        try:
+            policy = getter()
+            rows = policy.list()
+        except Exception:
+            return
+        for row in rows:
+            if str(row.get("kind") or "") != "container":
+                continue
+            try:
+                cx = (int(row["min_x"]) + int(row["max_x"])) // 2
+                cy = (int(row["min_y"]) + int(row["max_y"])) // 2
+                cz = (int(row["min_z"]) + int(row["max_z"])) // 2
+            except (KeyError, TypeError, ValueError):
+                continue
+            if abs(cx - int(target["x"])) > 4 or abs(cz - int(target["z"])) > 4:
+                continue
+            try:
+                context = await self._call(
+                    "block_context", {"x": cx, "y": cy, "z": cz}, timeout=8,
+                )
+            except Exception:
+                continue
+            if "bed" in str(context.get("block") or ""):
+                try:
+                    policy.remove(str(row.get("name") or ""))
+                except Exception:
+                    pass
+
     async def return_home(self, reach=2.0):
         status = await self.status()
         target = self._home_target(status)
@@ -2130,6 +2272,7 @@ class VanillaSkills:
         if target.get("dimension") and target["dimension"] != status.get("dimension"):
             raise SkillError("家床记录属于另一个维度")
         reach = max(0.5, min(8.0, float(reach)))
+        await self._unprotect_bed_region(target)
         await self._auto_eat_if_needed()
         current = self._coords(status)
         if current is None:
@@ -2207,6 +2350,40 @@ class VanillaSkills:
             except SkillError as exc:
                 if direct_error is None:
                     direct_error = exc
+                # Recompute distance from the new position; a short tunnel may
+                # now be enough to reach the bed.
+                status = await self.status()
+                current = self._coords(status)
+                if current is not None:
+                    updated_distance = math.dist(current, target_point)
+                    if updated_distance <= 32 and abs(target_point[1] - current[1]) <= 12:
+                        try:
+                            await self.tunnel_to(target, max_distance=32, reach=reach)
+                            return {
+                                "skill": "return_home",
+                                "target": {"x": int(target["x"]), "y": int(target["y"]), "z": int(target["z"])},
+                                "distance": updated_distance,
+                                "arrived": True,
+                                "ascended": True,
+                                "hopped": hopped,
+                                "tunneled": True,
+                            }
+                        except SkillError as tunnel_exc:
+                            if tunnel_error is None:
+                                tunnel_error = tunnel_exc
+                # The staircase may have reached a basement/room that has an
+                # existing path.  Re-probe before reporting failure.
+                try:
+                    if await self._hop_toward_home(target):
+                        result = await self.return_to(target, reach=reach)
+                        result["skill"] = "return_home"
+                        result["ascended"] = True
+                        result["hopped"] = True
+                        result["tunneled"] = False
+                        return result
+                except SkillError as hop_exc:
+                    if direct_error is None:
+                        direct_error = hop_exc
 
         if direct_error is not None and tunnel_error is not None:
             raise SkillError(f"回家失败：{direct_error}；隧道失败：{tunnel_error}") from tunnel_error

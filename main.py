@@ -2630,7 +2630,7 @@ class McBridgePlugin(Star):
     @filter.llm_tool(name="mc_goto")
     @require_mc_tool("mc_goto")
     async def mc_goto(self, event: AstrMessageEvent, x: int = 0, y: int = 0, z: int = 0,
-                      allow_break: bool = False, place_ref: str = ""):
+                      allow_break: bool = False, place_ref: str = "", strict: bool = False):
         """加入受监控的坐标移动任务。目标不可站立时会自动改用最近站位。
 
         Args:
@@ -2639,6 +2639,7 @@ class McBridgePlugin(Star):
             z(int): 目标方块或站位 Z。
             allow_break(bool): 是否允许本次移动受控掘进穿过方块；默认否，普通移动不会自动挖方块。
             place_ref(string): 记忆地点的不透明句柄；提供时由本地解析坐标，优先于 x/y/z。
+            strict(bool): 精确走到给定坐标，不做最近站位解析；用于已知可站立但解析器会偏开的点。
         """
         place_ref = str(place_ref or "").strip()
         if place_ref:
@@ -2684,7 +2685,10 @@ class McBridgePlugin(Star):
                 return f"已按地点记忆加入移动任务（{label}），实际到达后才汇报完成；精确坐标由本地卡片显示"
             except Exception as exc:
                 return "地点导航未完成：" + type(exc).__name__
-        target, info = await self._resolve_navigation_target(x, y, z)
+        if strict:
+            target, info = (int(x), int(y), int(z)), {"adjusted": False, "source": "strict"}
+        else:
+            target, info = await self._resolve_navigation_target(x, y, z)
         if target is None:
             return info
         tx, ty, tz = target

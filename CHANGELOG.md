@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.10
+
+- 新增 `mc_goto(strict=true)`：精确走到指定坐标，不再自动改到最近站位，适合已知可站立但解析器会偏开的挖矿点。
+- 采矿/采集/隧道/回家前会自动关闭残留的背包或合成界面，避免 `close the current screen before digging` 被吞掉后变成“附近没有可采集的目标”。
+- 青金石全链路实机通过：下挖到 y=1、采到 23 个青金石、自动回床，途中自动进食。
+
 ## 1.5.9
 
 - 增加 `break_budget_per_mining_action`（默认 32）：`mine_ore`/`gather`/`tunnel_to`/`return_home` 单次寻路可破坏更多方块，解决深层矿脉在 8 格动作预算内无法接近的问题；普通动作仍为 8。

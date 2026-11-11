@@ -689,6 +689,7 @@ class VanillaSkills:
         resource = RESOURCE_ALIASES.get(str(resource).strip().lower(), str(resource).strip().lower())
         if resource not in {"logs", "stone", "wheat"} and resource not in ORE_QUERIES:
             raise SkillError("只支持原木、石头、小麦和各种原矿")
+        await self._ensure_no_screen()
         target = max(1, min(256, int(count)))
         radius = max(6, min(16, int(radius)))
         status = await self.status()
@@ -1716,6 +1717,16 @@ class VanillaSkills:
         return await self.find_and_sleep(source=source, remember=bool(remember))
 
     # ------------------------------------------------------------------- L2
+    async def _ensure_no_screen(self):
+        """Close stray inventory/crafting screens before mining or walking."""
+        try:
+            status = await self.status()
+            screen = str(status.get("screen") or "none").strip().lower()
+            if screen and screen not in {"none", "null"}:
+                await self._call("container", {"operation": "close"}, timeout=5)
+        except Exception:
+            pass
+
     async def _auto_eat_if_needed(self, threshold=None):
         """Eat at a safe point inside a long task when food is low."""
         requested = bool(getattr(self.plugin, "_auto_eat_requested", False))
@@ -1848,6 +1859,7 @@ class VanillaSkills:
         resource = RESOURCE_ALIASES.get(str(resource or "").strip().lower(), str(resource or "").strip().lower())
         if resource not in ORE_QUERIES and resource != "stone":
             raise SkillError("mine_ore 只支持石头和各种原矿")
+        await self._ensure_no_screen()
         if not await self._ensure_pickaxe(80):
             raise SkillError("没有耐久足够的镐，无法深层采矿；请先合成铁镐")
         await self._auto_eat_if_needed()
@@ -1983,6 +1995,7 @@ class VanillaSkills:
         x, y, z = _position(target_pos)
         limit = max(1, min(32, int(max_distance)))
         reach = max(0.5, min(4.0, float(reach)))
+        await self._ensure_no_screen()
         start = self._coords(await self.status())
         if start is None:
             raise SkillError("当前位置不可用，无法挖隧道")
@@ -2263,6 +2276,7 @@ class VanillaSkills:
                     pass
 
     async def return_home(self, reach=2.0):
+        await self._ensure_no_screen()
         status = await self.status()
         target = self._home_target(status)
         if not target:

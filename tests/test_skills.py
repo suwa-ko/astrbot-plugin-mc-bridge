@@ -458,6 +458,8 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
                             "block": "minecraft:redstone_ore", "distance": 2.0,
                         }]}
                     return {"blocks": []}
+                if action == "block_context":
+                    return {"block": "minecraft:stone", "standable": False}
                 return await super()._call(action, params, timeout)
 
             async def _run_operation(self, action, params, seconds=10):

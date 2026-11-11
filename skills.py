@@ -113,6 +113,12 @@ DEEP_ORE_LAYERS = {
     "diamond": -54,
     "emerald": 32,
 }
+DIGGABLE_GROUND = {
+    "dirt", "grass_block", "podzol", "coarse_dirt", "rooted_dirt", "mud", "clay",
+    "sand", "gravel", "stone", "cobblestone", "deepslate", "cobbled_deepslate",
+    "tuff", "calcite", "andesite", "diorite", "granite", "netherrack",
+    "soul_sand", "soul_soil", "basalt", "blackstone",
+}
 PLANK_IDS = {
     "minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
     "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
@@ -1841,6 +1847,11 @@ class VanillaSkills:
             except SkillError:
                 # A 1x2 shaft has no room to place a crafting table normally.
                 # Pillar-place one under the player, then retry.
+                if self.item_count(await self.status(), "minecraft:crafting_table") < 1:
+                    try:
+                        await self.craft("minecraft:crafting_table", 1)
+                    except SkillError:
+                        pass
                 if await self._place_underfoot("minecraft:crafting_table"):
                     try:
                         await self.craft("minecraft:iron_pickaxe", 1)
@@ -1849,6 +1860,76 @@ class VanillaSkills:
                         return False
                 return False
         return False
+
+    def _diggable_block(self, block):
+        name = str(block or "").split(":")[-1].strip()
+        if not name or name in {"air", "cave_air", "void_air", "water", "lava"}:
+            return False
+        if name in DIGGABLE_GROUND:
+            return True
+        config = getattr(self.plugin, "config", {}) or {}
+        if bool(config.get("break_allow_unnatural", False)):
+            return not any(
+                word in name for word in (
+                    "chest", "barrel", "furnace", "hopper", "bed",
+                    "door", "trapdoor", "sign", "torch", "lantern",
+                )
+            )
+        return False
+
+    async def _can_dig_at(self, x, y, z):
+        try:
+            below = await self._call("block_context", {"x": int(x), "y": int(y) - 1, "z": int(z)}, timeout=8)
+            under = await self._call("block_context", {"x": int(x), "y": int(y) - 2, "z": int(z)}, timeout=8)
+        except Exception:
+            return False
+        if not self._diggable_block(below.get("block")):
+            return False
+        under_block = str(under.get("block") or "")
+        if not under_block or under_block.endswith("air") or "water" in under_block or "lava" in under_block:
+            return False
+        return self._diggable_block(under_block) or bool(under.get("standable"))
+
+    async def _can_dig_here(self):
+        status = await self.status()
+        if str(status.get("screen") or "none").strip().lower() not in {"none", "null"}:
+            await self._ensure_no_screen()
+            status = await self.status()
+        if status.get("on_ground") is False:
+            return False
+        current = self._coords(status)
+        if current is None:
+            return False
+        return await self._can_dig_at(
+            int(math.floor(current[0])),
+            int(math.floor(current[1])),
+            int(math.floor(current[2])),
+        )
+
+    async def _move_to_dig_site(self):
+        try:
+            scan = await self._call("scan", {"resource": "logs", "radius": 12}, timeout=15)
+        except Exception:
+            return False
+        ground = [row for row in (scan.get("ground") or []) if isinstance(row, dict)]
+        for row in sorted(ground, key=lambda item: _num(item.get("distance"), 999))[:12]:
+            try:
+                x = int(row["x"])
+                y = int(round(float(row.get("feet_y", row.get("y", 0)))))
+                z = int(row["z"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not await self._can_dig_at(x, y, z):
+                continue
+            error = await self.plugin._approach_target(x, y, z, seconds=20, reach=1.2)
+            if not error:
+                return True
+        return False
+
+    async def _prepare_dig_site(self):
+        if await self._can_dig_here():
+            return True
+        return await self._move_to_dig_site()
 
     async def _dig_to_layer(self, target_y, deadline, step=8):
         """Dig a safe 1x1 shaft down toward a target Y, returning progress."""
@@ -1872,8 +1953,22 @@ class VanillaSkills:
                 text = str(exc)
                 if "预算" in text:
                     raise
-                # A cave, fluid, slab/stairs, or protected block stops the
-                # shaft.  Scan from the current depth instead of forcing it.
+                if "screen" in text.lower():
+                    await self._ensure_no_screen()
+                    try:
+                        await self._run("dig_down", {"depth": depth}, seconds=80)
+                    except SkillError as retry_exc:
+                        text = str(retry_exc)
+                    else:
+                        text = ""
+                if text and any(
+                    word in text for word in (
+                        "不在可破坏类别", "not standing safely",
+                        "no safe floor", "falling", "not visible",
+                    )
+                ):
+                    raise SkillError("向下挖掘受阻：" + text)
+                # A cave or fluid stops the shaft; scan from this depth.
                 return digs
             after = await self.status()
             after_position = after.get("position") or {}
@@ -1910,6 +2005,8 @@ class VanillaSkills:
             # Deep ores: descend at the current mining site before scanning.
             # Letting gather() explore first can walk back into the base, where
             # the floor may be a slab and cannot be dug.
+            if not await self._prepare_dig_site():
+                raise SkillError("附近没有可向下挖的自然地面；请先走到泥土/石头地面再挖矿")
             self._mark("mine_ore", "descending", 0, target, {"resource": resource, "target_y": layer})
             await self._dig_to_layer(layer, deadline)
             await self._auto_eat_if_needed()
@@ -1933,6 +2030,8 @@ class VanillaSkills:
                     raise
                 if current_y <= layer + 2:
                     raise
+                if not await self._prepare_dig_site():
+                    raise SkillError("附近没有可向下挖的自然地面；请先走到泥土/石头地面再挖矿")
                 self._mark("mine_ore", "descending", 0, target, {"resource": resource, "target_y": layer})
                 try:
                     await self._dig_to_layer(layer, deadline)

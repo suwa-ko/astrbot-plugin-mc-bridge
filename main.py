@@ -68,9 +68,16 @@ from .vision import vision_input
 
 PLUGIN_NAME = "astrbot_plugin_mc_bridge"
 CONTROL_EPOCH = ContextVar("mc_control_epoch", default=None)
+CURRENT_EVENT = ContextVar("mc_current_event", default=None)
 RESOURCE_MENTION = {
     "coal": ("煤", "coal"),
     "iron": ("铁", "iron"),
+    "copper": ("铜", "copper"),
+    "gold": ("金", "gold"),
+    "redstone": ("红石", "redstone"),
+    "lapis": ("青金石", "lapis"),
+    "diamond": ("钻石", "diamond"),
+    "emerald": ("绿宝石", "emerald"),
     "stone": ("石头", "圆石", "石料", "stone"),
     "logs": ("木", "树", "原木", "log", "wood"),
     "wheat": ("小麦", "wheat"),
@@ -83,6 +90,9 @@ def require_mc_tool(name):
         async def guarded(self, event, *args, **kwargs):
             token = None
             reply_token = None
+            event_token = None
+            if event is not None:
+                event_token = CURRENT_EVENT.set(event)
             if event is not None and CONTROL_EPOCH.get() is None:
                 epoch = event.get_extra("_mc_control_epoch", None)
                 if epoch is None:
@@ -99,6 +109,8 @@ def require_mc_tool(name):
                 if reply_token is not None:REPLY_ROUTE.reset(reply_token)
                 if token is not None:
                     CONTROL_EPOCH.reset(token)
+                if event_token is not None:
+                    CURRENT_EVENT.reset(event_token)
         return guarded
     return decorate
 
@@ -199,6 +211,7 @@ class BridgeServer:
         token: str,
         on_chat=None,
         on_disconnect=None,
+        on_ready=None,
         chat_priority=None,
         on_chat_overflow=None,
         chat_pending_limit=4,
@@ -210,6 +223,7 @@ class BridgeServer:
         self.token = token
         self.on_chat = on_chat
         self.on_disconnect = on_disconnect
+        self.on_ready = on_ready
         self.on_survival_event = on_survival_event
         self.on_respawn=None
         self.chat_priority=chat_priority
@@ -349,6 +363,11 @@ class BridgeServer:
         elif typ == "hello":
             self.client_info = data
             logger.info("[mc-bridge] client protocol=%s", data.get("protocol", 1))
+            callback = self.on_ready
+            if callback is not None and len(self._event_jobs) < 8:
+                job = asyncio.create_task(callback(data))
+                self._event_jobs.add(job)
+                job.add_done_callback(self._finish_event_job)
         elif typ=='event' and data.get('event')=='normal_respawn':
             payload=data.get('data',{})
             if not isinstance(payload,dict) or payload.get('reason') not in ('player_died','actor_replaced'):return
@@ -487,6 +506,7 @@ class McBridgePlugin(Star):
             token=str(self.config.get("token", "change-me")),
             on_chat=self._on_game_chat,
             on_disconnect=self._connection_lost,
+            on_ready=self._client_ready,
             chat_priority=self._priority_game_chat,
             on_chat_overflow=self._game_chat_overflow,
             chat_pending_limit=self.config.get("game_chat_pending_limit",4),
@@ -503,6 +523,9 @@ class McBridgePlugin(Star):
         self._closing = False
         self._manual_movement = False
         self._control_epoch = 0
+        self._auto_eat_requested = False
+        self._interrupted_task = None
+        self._resume_attempts = 0
         self._action_lock = asyncio.Lock()
         self._agent_lock = asyncio.Lock()
         self._agent_jobs: set[asyncio.Task] = set()
@@ -895,21 +918,56 @@ class McBridgePlugin(Star):
             self._active_task = asyncio.create_task(self._task_worker())
         return True
 
+    def _chain_dependency(self, depends_on: str = "") -> str:
+        """Return the previous task in this Agent turn, preserving time order."""
+        depends_on = str(depends_on or "").strip()
+        if depends_on:
+            return depends_on
+        event = CURRENT_EVENT.get()
+        chain = getattr(self, "_task_chain", None)
+        if event is None or not isinstance(chain, dict) or chain.get("event") is not event:
+            return ""
+        return str(chain.get("last") or "")
+
+    def _remember_task_chain(self, task_id: str) -> None:
+        event = CURRENT_EVENT.get()
+        if event is not None and task_id:
+            self._task_chain = {"event": event, "last": str(task_id)}
+
     def _queue_skill(self, label: str, name: str, **params) -> bool:
+        self._resume_attempts = 0
         spec = self._agent_skill_spec(name)
         resources = tuple(resource.value for resource in spec.resources) if spec is not None else ("actor",)
         budget = float(spec.max_seconds) if spec is not None else 0.0
-        return self._enqueue_tasks([QueuedTask(
+        dependency = self._chain_dependency()
+        task = QueuedTask(
             kind="skill",
             goal=label,
             target=name,
             params=params,
             resources=resources,
             budget_seconds=budget,
-        )])
+            dependencies=(dependency,) if dependency else (),
+        )
+        if not self._enqueue_tasks([task]):
+            return False
+        self._remember_task_chain(task.task_id)
+        return True
 
     async def _gather_guard(self, event, resource: str) -> str | None:
-        aliases = {"煤": "coal", "煤炭": "coal", "铁": "iron", "铁矿": "iron", "石头": "stone", "圆石": "stone", "石料": "stone", "木头": "logs", "原木": "logs", "树": "logs", "小麦": "wheat"}
+        aliases = {
+            "煤": "coal", "煤炭": "coal", "煤矿": "coal",
+            "铁": "iron", "铁矿": "iron",
+            "铜": "copper", "铜矿": "copper",
+            "金": "gold", "金矿": "gold",
+            "红石": "redstone", "红石矿": "redstone",
+            "青金石": "lapis", "青金石矿": "lapis",
+            "钻石": "diamond", "钻石矿": "diamond",
+            "绿宝石": "emerald", "绿宝石矿": "emerald",
+            "石头": "stone", "圆石": "stone", "石料": "stone",
+            "木头": "logs", "原木": "logs", "树": "logs",
+            "小麦": "wheat",
+        }
         resource = str(resource or "logs").strip().lower()
         resource = aliases.get(resource, resource)
         text = str(getattr(event, "message_str", "") or "")
@@ -1566,6 +1624,28 @@ class McBridgePlugin(Star):
             return None
 
 
+    def _break_budget_for_task(self, item) -> int | None:
+        """Choose a task budget that matches the kind of work being done.
+
+        General navigation keeps the configured per-task limit.  Deliberate
+        digging/climbing tasks receive larger, separately configurable budgets.
+        """
+        opcode = str(getattr(item, "target", "") or "")
+        keys = {
+            "mine_ore": ("break_budget_per_mining_task", 640),
+            "return_home": ("break_budget_per_return_task", 640),
+            "tunnel_to": ("break_budget_per_tunnel_task", 128),
+            "gather": ("break_budget_per_gather_task", 128),
+        }
+        setting = keys.get(opcode)
+        if setting is None:
+            return None
+        key, default = setting
+        try:
+            return int(self.config.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
     def _break_policy_for(self) -> BreakPolicy:
         policy = getattr(self, "_break_policy", None)
         if policy is None:
@@ -1844,7 +1924,10 @@ class McBridgePlugin(Star):
                         scheduled.deadline = item.deadline
                 route_token=REPLY_ROUTE.set(item.reply_route)
                 try:
-                    self._break_policy_for().begin_task(str(getattr(item, "task_id", "") or "direct"))
+                    self._break_policy_for().begin_task(
+                        str(getattr(item, "task_id", "") or "direct"),
+                        per_task=self._break_budget_for_task(item),
+                    )
                     await self._capture_task_baseline(item)
                     result = await self._run_with_lease(item, budget)
                     outcome = classify_goal_outcome(result, item.kind)
@@ -2088,6 +2171,7 @@ class McBridgePlugin(Star):
         self._task_stop.set()
         self._task_queue.clear()
         self._task_current = None
+        self._interrupted_task = None
         scheduler = getattr(self, "_scheduler", None)
         if scheduler is not None:
             scheduler.cancel_all("task queue cancelled")
@@ -2211,6 +2295,7 @@ class McBridgePlugin(Star):
         # Synchronous invalidation: never await an RPC from the WebSocket reader.
         self._control_epoch+=1;self._task_stop.set();self._task_queue.clear()
         self._manual_movement=False;self._manual_notice_route=None
+        self._interrupted_task=None
         self._cancel_active_task()
         for job in self._agent_jobs:
             if job is not asyncio.current_task():job.cancel()
@@ -2399,7 +2484,7 @@ class McBridgePlugin(Star):
             "mc_scan 扫描附近方块/实体；mc_set_respawn 设置重生床；mc_recipes 查配方；"
             "mc_memory 查询/记录地点（模型只看到 place_ref 和安全标签，精确坐标由本地回执卡片显示）；"
             "mc_goto 支持 place_ref 导航；mc_protect 管理保护区域；mc_screenshot 只在确实需要看画面时使用。"
-            "多步骤任务用 mc_task_start：opcode 支持 gather(resource,count)、craft(item,count)、smelt(item,count)、"
+            "多步骤任务用 mc_task_start：opcode 支持 mine_ore(resource,count,return_home)（煤/铁/铜/金/红石/青金石/钻石/绿宝石，深层矿会自动向下挖）、gather(resource,count)、craft(item,count)、smelt(item,count)、"
             "container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、"
             "farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、"
             "explore(goal,max_seconds,max_distance)、return_to(target_pos)、return_home(reach)、tunnel_to(target_pos,max_distance,reach)、resupply(...)、trade_for(item,count,radius)；"
@@ -2579,10 +2664,13 @@ class McBridgePlugin(Star):
                     return "这个地点没有可用站位，未加入移动任务"
                 tx, ty, tz = int(round(float(stand["x"]))), int(round(float(stand.get("feet_y", stand["y"])))), int(round(float(stand["z"])))
                 label = local.get("label") or local.get("kind") or "地点"
+                dependency = self._chain_dependency()
                 item = QueuedTask("goto", f"去 {label}", x=tx, y=ty, z=tz,
-                                  params={"allow_break": bool(allow_break), "place_ref": place_ref})
+                                  params={"allow_break": bool(allow_break), "place_ref": place_ref},
+                                  dependencies=(dependency,) if dependency else ())
                 if not self._enqueue_tasks([item]):
                     return "队列已满，未加入"
+                self._remember_task_chain(item.task_id)
                 self._queue_place_cards(event, [row])
                 return f"已按地点记忆加入移动任务（{label}），实际到达后才汇报完成；精确坐标由本地卡片显示"
             except Exception as exc:
@@ -2591,9 +2679,19 @@ class McBridgePlugin(Star):
         if target is None:
             return info
         tx, ty, tz = target
-        item = QueuedTask("goto", f"去 {tx} {ty} {tz}", x=tx, y=ty, z=tz, params={"allow_break": bool(allow_break)})
+        if info.get("adjusted") and (
+            abs(tx - int(x)) > 3 or abs(ty - int(y)) > 3 or abs(tz - int(z)) > 3
+        ):
+            return f"目标不可站立，最近可用站位偏离目标（{tx} {ty} {tz}），未加入移动任务；请换一个目标"
+        dependency = self._chain_dependency()
+        item = QueuedTask(
+            "goto", f"去 {tx} {ty} {tz}", x=tx, y=ty, z=tz,
+            params={"allow_break": bool(allow_break)},
+            dependencies=(dependency,) if dependency else (),
+        )
         if not self._enqueue_tasks([item]):
             return "队列已满，未加入"
+        self._remember_task_chain(item.task_id)
         if info.get("adjusted"):
             return f"目标方块不可站立，已改到最近站位 {tx} {ty} {tz}；已加入移动任务，实际到达后才汇报完成"
         return "已加入移动任务，实际到达后才汇报完成"
@@ -3522,16 +3620,90 @@ class McBridgePlugin(Star):
         return error
 
     async def _connection_lost(self):
+        item = self._task_current
+        interrupted = None
+        if (
+            item is not None
+            and not self._closing
+            and getattr(item, "kind", "") == "skill"
+            and str(getattr(item, "target", "") or "") in {"mine_ore", "return_home", "tunnel_to", "gather"}
+        ):
+            interrupted = {
+                "opcode": str(getattr(item, "target", "") or ""),
+                "params": dict(getattr(item, "params", {}) or {}),
+                "priority": int(getattr(item, "priority", 10) or 10),
+                "route": getattr(item, "reply_route", None),
+                "checkpoint": dict(getattr(item, "checkpoint", {}) or {}),
+                "at": time.time(),
+            }
         affected=self._notice_routes()
         self._control_epoch+=1
         self._manual_movement=False;self._manual_notice_route=None
         task=self._active_task;self._cancel_active_task()
+        self._interrupted_task = interrupted
         jobs={job for job in (task,*self._agent_jobs) if job is not None and job is not asyncio.current_task()}
         for job in jobs:job.cancel()
         if jobs:await asyncio.gather(*jobs,return_exceptions=True)
         if not self._closing:
+            auto = bool(self.config.get("auto_resume_after_disconnect", True))
+            note = "重连后会尝试自动续跑" if auto else "重连后不会自动续跑"
             for destination in affected:
-                await self._task_chat('Minecraft连接已断开，你发起的任务已中断；重连后不会自动续跑',route=destination,kind='disconnect')
+                await self._task_chat(f"Minecraft连接已断开，你发起的任务已中断；{note}",route=destination,kind='disconnect')
+
+    async def _client_ready(self, _data):
+        pending = self._interrupted_task
+        self._interrupted_task = None
+        if not pending or self._closing:
+            return
+        if not bool(self.config.get("auto_resume_after_disconnect", True)):
+            return
+        try:
+            max_age = float(self.config.get("auto_resume_disconnect_seconds", 120) or 120)
+        except (TypeError, ValueError):
+            max_age = 120.0
+        if time.time() - float(pending.get("at", 0) or 0) > max_age:
+            return
+        if self._resume_attempts >= 2:
+            return
+        status = await self._call("status", timeout=8)
+        if self._err(status):
+            return
+        health = float(status.get("health", 20) or 20)
+        hostiles = [
+            row for row in (status.get("hostiles") or [])
+            if isinstance(row, dict) and float(row.get("distance", 999) or 999) <= 8
+        ]
+        if health <= 8 or hostiles:
+            return
+        opcode = str(pending.get("opcode") or "")
+        params = dict(pending.get("params") or {})
+        stage = str((pending.get("checkpoint") or {}).get("stage") or "")
+        if opcode == "mine_ore" and stage == "returning":
+            opcode = "return_home"
+            params = {"reach": 2.0}
+        self._resume_attempts += 1
+        route = pending.get("route")
+        if route is None:
+            route = UNSET
+        route_token = None
+        try:
+            if route is not UNSET:
+                route_token = REPLY_ROUTE.set(route)
+            await self._start_agent_task(
+                opcode, params, int(pending.get("priority", 10) or 10),
+            )
+            await self._task_chat(
+                "Minecraft重连，已自动继续之前中断的任务",
+                route=route, kind="resume",
+            )
+        except Exception as exc:
+            await self._task_chat(
+                "Minecraft重连，但任务自动恢复失败：" + type(exc).__name__,
+                route=route, kind="resume",
+            )
+        finally:
+            if route_token is not None:
+                REPLY_ROUTE.reset(route_token)
 
     async def _wait_arrival(self, x, y, z, seconds, tolerance=1.8, expected_scope=None, allow_ladder_assist=False, allow_break=False):
         progress_at=time.monotonic();deadline=progress_at+seconds;progress_position=None;ladder_assist_tried=False;last_status=None
@@ -3981,15 +4153,27 @@ class McBridgePlugin(Star):
         """采集技能：扫描自然资源，走近、清障、挖掘、拾取并核对库存增量。
 
         Args:
-            resource(string): logs/stone/coal/iron/wheat 或对应中文。
+            resource(string): logs/stone/wheat 或煤/铁/铜/金/红石/青金石/钻石/绿宝石等原矿及对应中文。
             count(int): 目标新增数量1-256。
-            radius(int): 搜索半径6-12。
+            radius(int): 搜索半径6-16。
             max_seconds(int): 总时限20-600秒。
             allow_night(bool): 已废弃，忽略；夜间不再拦截采集。
         """
         if not 1 <= int(count) <= 256:
             return "采集数量必须在1-256"
-        aliases = {"煤": "coal", "煤炭": "coal", "铁": "iron", "铁矿": "iron", "石头": "stone", "圆石": "stone", "石料": "stone", "木头": "logs", "原木": "logs", "树": "logs", "小麦": "wheat"}
+        aliases = {
+            "煤": "coal", "煤炭": "coal", "煤矿": "coal",
+            "铁": "iron", "铁矿": "iron",
+            "铜": "copper", "铜矿": "copper",
+            "金": "gold", "金矿": "gold",
+            "红石": "redstone", "红石矿": "redstone",
+            "青金石": "lapis", "青金石矿": "lapis",
+            "钻石": "diamond", "钻石矿": "diamond",
+            "绿宝石": "emerald", "绿宝石矿": "emerald",
+            "石头": "stone", "圆石": "stone", "石料": "stone",
+            "木头": "logs", "原木": "logs", "树": "logs",
+            "小麦": "wheat",
+        }
         resource = aliases.get(str(resource or "logs").strip().lower(), str(resource or "logs").strip().lower())
         error = await self._gather_guard(event, resource)
         if error:
@@ -5558,7 +5742,7 @@ class McBridgePlugin(Star):
         """启动一个 L1/L2 技能任务，返回 task_id；参数用 JSON 对象传入。
 
         Args:
-            opcode(string): gather(resource,count)、craft(item,count)、smelt(item,count)、container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、explore(goal,max_seconds,max_distance)、return_to(target_pos)、resupply(...)、trade_for(item,count,radius)；auto 表示按文本分类；resume 表示恢复检查点任务。
+            opcode(string): mine_ore(resource,count,return_home)（煤/铁/铜/金/红石/青金石/钻石/绿宝石，深层矿自动下挖）、gather(resource,count)、craft(item,count)、smelt(item,count)、container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、explore(goal,max_seconds,max_distance)、return_to(target_pos)、return_home(reach)、tunnel_to(target_pos,max_distance,reach)、resupply(...)、trade_for(item,count,radius)；auto 表示按文本分类；resume 表示恢复检查点任务。
             params_json(string): 技能参数JSON；auto 模式用 {"text":"砍8个木头"}。
             priority(int): 0紧急、10主人、20普通、30自主、40后台。
             dry_run(bool): 只校验并返回资源/时限预览，不加入队列。
@@ -5572,6 +5756,8 @@ class McBridgePlugin(Star):
             return "params_json 必须是JSON对象"
         if len(json.dumps(params, ensure_ascii=False)) > 4096:
             return "参数过大，拒绝启动"
+        if not dry_run:
+            depends_on = self._chain_dependency(str(depends_on or ""))
         try:
             wait_seconds = max(0.0, min(15.0, float(self.config.get("short_task_wait_seconds", 5) or 0)))
         except (TypeError, ValueError):
@@ -5611,6 +5797,9 @@ class McBridgePlugin(Star):
                     payload["intent"] = intent_info
                 return json.dumps(payload, ensure_ascii=False)
             task_id = await self._start_agent_task(opcode, params, int(priority), depends_on, suppress_notify=inline_wait)
+            if not dry_run:
+                self._resume_attempts = 0
+                self._remember_task_chain(task_id)
             if opcode in {"gather", "mine_ore"}:
                 self._remember_gather_resource(params.get("resource", "coal" if opcode == "mine_ore" else "logs"))
         except SkillError as exc:

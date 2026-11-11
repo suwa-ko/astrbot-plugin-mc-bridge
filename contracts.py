@@ -303,7 +303,7 @@ class L2Spec:
 
 L2_SPECS: dict[L2Opcode, L2Spec] = {
     L2Opcode.GATHER: L2Spec(L2Opcode.GATHER, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 600),
-    L2Opcode.MINE_ORE: L2Spec(L2Opcode.MINE_ORE, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 600),
+    L2Opcode.MINE_ORE: L2Spec(L2Opcode.MINE_ORE, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 1200),
     L2Opcode.CRAFT_ITEM: L2Spec(L2Opcode.CRAFT_ITEM, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.CONTAINER, Resource.INVENTORY}), 300),
     L2Opcode.SMELT_ITEM: L2Spec(L2Opcode.SMELT_ITEM, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.CONTAINER}), 900),
     L2Opcode.CONTAINER_TRANSFER: L2Spec(L2Opcode.CONTAINER_TRANSFER, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.CONTAINER}), 120),
@@ -314,8 +314,8 @@ L2_SPECS: dict[L2Opcode, L2Spec] = {
     L2Opcode.COMBAT: L2Spec(L2Opcode.COMBAT, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 120),
     L2Opcode.TRADE_FOR: L2Spec(L2Opcode.TRADE_FOR, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.CONTAINER}), 120),
     L2Opcode.FIND_AND_SLEEP: L2Spec(L2Opcode.FIND_AND_SLEEP, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 60),
-    L2Opcode.RETURN_HOME: L2Spec(L2Opcode.RETURN_HOME, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 600),
-    L2Opcode.TUNNEL_TO: L2Spec(L2Opcode.TUNNEL_TO, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 300),
+    L2Opcode.RETURN_HOME: L2Spec(L2Opcode.RETURN_HOME, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 1200),
+    L2Opcode.TUNNEL_TO: L2Spec(L2Opcode.TUNNEL_TO, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 600),
 }
 
 L1_OPCODE_NAMES = frozenset(opcode.value for opcode in L1Opcode)

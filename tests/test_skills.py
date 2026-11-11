@@ -287,7 +287,7 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         plugin._move_and_wait = move
         skills = skills_mod.VanillaSkills(plugin)
 
-        async def ascend():
+        async def ascend(min_y=None):
             plugin.sky_visible = True
             plugin.position = {"x": 0, "y": 120, "z": 0}
             return True
@@ -296,6 +296,43 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         result = await skills.return_home()
         self.assertTrue(result["arrived"])
         self.assertTrue(result["ascended"])
+
+    async def test_return_home_ascends_in_open_shaft_with_visible_sky(self):
+        plugin = FakePlugin()
+        plugin.position = {"x": 0, "y": 23, "z": 0}
+
+        class Shaft(FakePlugin):
+            async def _call(self, action, params=None, timeout=10):
+                data = await super()._call(action, params, timeout)
+                if action == "status":
+                    data["sky_visible"] = True
+                return data
+
+        plugin = Shaft()
+        plugin.position = {"x": 0, "y": 23, "z": 0}
+        memory = FakeMemory()
+        memory.set("home_bed", "main", x=0, y=94, z=0, world_key="test-world", dimension="minecraft:overworld")
+        plugin._poi_memory_for = lambda: memory
+        seen = {}
+        skills = skills_mod.VanillaSkills(plugin)
+
+        async def ascend(min_y=None):
+            seen["min_y"] = min_y
+            plugin.position = {"x": 0, "y": 93, "z": 0}
+            return True
+
+        async def move(x, y, z, seconds):
+            if not seen.get("attempted"):
+                seen["attempted"] = True
+                raise skills_mod.SkillError("blocked")
+            plugin.position = {"x": x, "y": y, "z": z}
+
+        skills._ascend_to_surface = ascend
+        plugin._move_and_wait = move
+        result = await skills.return_home()
+        self.assertTrue(result["arrived"])
+        self.assertTrue(result["ascended"])
+        self.assertEqual(seen["min_y"], 94)
 
     async def test_return_home_falls_back_to_bounded_tunnel(self):
         plugin = FakePlugin()
@@ -320,6 +357,16 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["arrived"])
         self.assertTrue(result["tunneled"])
         self.assertEqual(calls[0][0]["x"], 8)
+
+    async def test_auto_eat_requested_during_task(self):
+        plugin = FakePlugin()
+        plugin.config = {"auto_eat_food": 12}
+        plugin._auto_eat_requested = True
+        skills = skills_mod.VanillaSkills(plugin)
+        skills.eat_until_full = AsyncMock(return_value={"eaten": 1})
+        self.assertTrue(await skills._auto_eat_if_needed())
+        skills.eat_until_full.assert_awaited_once()
+        self.assertFalse(plugin._auto_eat_requested)
 
     async def test_ascend_to_surface_climbs_short_stair_steps(self):
         class Underground(FakePlugin):
@@ -347,7 +394,8 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         skills = skills_mod.VanillaSkills(plugin)
         self.assertTrue(await skills._ascend_to_surface())
         self.assertGreaterEqual(len(plugin.approaches), 3)
-        self.assertTrue(all(call[3] for call in plugin.approaches))
+        self.assertTrue(all(not call[3] for call in plugin.approaches))
+        self.assertTrue(any(action == "mine_at" for action, _ in plugin.runs))
 
     async def test_tunnel_to_retries_after_a_stalled_navigation_slice(self):
         plugin = FakePlugin()
@@ -368,6 +416,67 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         result = await skills_mod.VanillaSkills(plugin).tunnel_to({"x": 8, "y": 64, "z": 0})
         self.assertTrue(result["arrived"])
         self.assertGreaterEqual(attempts["count"], 2)
+
+    async def test_mine_ore_descends_to_redstone_layer(self):
+        class RedstonePlugin(FakePlugin):
+            def __init__(self):
+                super().__init__()
+                self.position = {"x": 0, "y": 80, "z": 0}
+                self.redstone = 0
+                self.digs = []
+                self.pickaxe = {
+                    "id": "minecraft:iron_pickaxe", "count": 1, "slot": 3,
+                    "damage": 0, "max_damage": 250,
+                }
+
+            async def _call(self, action, params=None, timeout=10):
+                if action == "status":
+                    data = await super()._call(action, params, timeout)
+                    data["position"] = dict(self.position)
+                    data["inventory_items"] = [dict(self.pickaxe)] + (
+                        [{"id": "minecraft:redstone", "count": self.redstone, "slot": 20}]
+                        if self.redstone else []
+                    )
+                    return data
+                if action == "scan":
+                    if self.position["y"] <= 14 and self.redstone == 0:
+                        return {
+                            "resources": [{
+                                "x": 1, "y": self.position["y"], "z": 0, "distance": 2.0,
+                                "approaches": [{
+                                    "x": 0, "y": self.position["y"], "z": 0,
+                                    "feet_y": self.position["y"], "distance": 1.0, "clear": [],
+                                }],
+                            }],
+                            "ground": [],
+                        }
+                    return {"resources": [], "ground": []}
+                if action == "scan_blocks":
+                    if self.position["y"] <= 14 and self.redstone == 0:
+                        return {"blocks": [{
+                            "x": 1, "y": self.position["y"], "z": 0,
+                            "block": "minecraft:redstone_ore", "distance": 2.0,
+                        }]}
+                    return {"blocks": []}
+                return await super()._call(action, params, timeout)
+
+            async def _run_operation(self, action, params, seconds=10):
+                if action == "dig_down":
+                    depth = int(params.get("depth", 1))
+                    self.digs.append(depth)
+                    self.position["y"] -= depth
+                    return {"phase": "completed", "success": True}
+                if action == "mine_at":
+                    self.redstone += 4
+                    return {"phase": "completed", "success": True}
+                return await super()._run_operation(action, params, seconds)
+
+        plugin = RedstonePlugin()
+        result = await skills_mod.VanillaSkills(plugin).mine_ore("redstone", 1)
+        self.assertEqual(result["skill"], "mine_ore")
+        self.assertGreaterEqual(result["collected"], 1)
+        self.assertTrue(plugin.digs)
+        self.assertEqual(plugin.position["y"], 12)
 
     async def test_smelt_without_furnace_attempts_crafting(self):
         skills = skills_mod.VanillaSkills(FakePlugin())

@@ -69,6 +69,7 @@ class BreakPolicy:
         self.path = Path(path)
         self.per_action = max(1, int(per_action))
         self.per_task = max(self.per_action, int(per_task))
+        self.default_per_task = self.per_task
         self.allow_unnatural = bool(allow_unnatural)
         self.regions: list[dict[str, Any]] = []
         self._task_id = "direct"
@@ -204,10 +205,14 @@ class BreakPolicy:
             return dict(row)
         return None
 
-    def begin_task(self, task_id: str) -> None:
+    def begin_task(self, task_id: str, per_task: int | None = None) -> None:
         self._task_id = str(task_id or "direct")
         self._task_count = 0
         self._action_count = 0
+        if per_task is None:
+            self.per_task = self.default_per_task
+        else:
+            self.per_task = max(self.per_action, int(per_task))
 
     def preflight(self, x: int, y: int, z: int, block_id: str = "", *,
                   dimension: str = "") -> tuple[bool, str]:

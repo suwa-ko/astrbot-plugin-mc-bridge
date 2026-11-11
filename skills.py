@@ -70,14 +70,49 @@ def parse_transfer_items(raw):
 
 RESOURCE_ALIASES = {
     "木头": "logs", "原木": "logs", "树": "logs", "log": "logs",
-    "石头": "stone", "圆石": "stone", "石料": "stone",
-    "煤": "coal", "煤炭": "coal", "coal": "coal",
+    "石头": "stone", "圆石": "stone", "石料": "stone", "stone": "stone",
+    "煤": "coal", "煤炭": "coal", "煤矿": "coal", "coal": "coal",
     "铁": "iron", "铁矿": "iron", "iron": "iron",
+    "铜": "copper", "铜矿": "copper", "copper": "copper",
+    "金": "gold", "金矿": "gold", "gold": "gold",
+    "红石": "redstone", "红石矿": "redstone", "redstone": "redstone",
+    "青金石": "lapis", "青金石矿": "lapis", "lapis": "lapis",
+    "钻石": "diamond", "钻石矿": "diamond", "diamond": "diamond",
+    "绿宝石": "emerald", "绿宝石矿": "emerald", "emerald": "emerald",
     "小麦": "wheat", "麦子": "wheat", "wheat": "wheat",
 }
 LOG_SUFFIX = "_log"
 STONE_IDS = {"minecraft:stone", "minecraft:cobblestone", "minecraft:deepslate", "minecraft:cobbled_deepslate"}
-IRON_IDS = {"minecraft:raw_iron", "minecraft:iron_ore", "minecraft:deepslate_iron_ore"}
+ORE_ITEM_IDS = {
+    "coal": {"minecraft:coal"},
+    "iron": {"minecraft:raw_iron", "minecraft:iron_ore", "minecraft:deepslate_iron_ore"},
+    "copper": {"minecraft:raw_copper", "minecraft:copper_ore", "minecraft:deepslate_copper_ore"},
+    "gold": {"minecraft:raw_gold", "minecraft:gold_ore", "minecraft:deepslate_gold_ore", "minecraft:nether_gold_ore"},
+    "redstone": {"minecraft:redstone"},
+    "lapis": {"minecraft:lapis_lazuli"},
+    "diamond": {"minecraft:diamond"},
+    "emerald": {"minecraft:emerald"},
+}
+ORE_QUERIES = {
+    "coal": "coal_ore,deepslate_coal_ore",
+    "iron": "iron_ore,deepslate_iron_ore",
+    "copper": "copper_ore,deepslate_copper_ore",
+    "gold": "gold_ore,deepslate_gold_ore,nether_gold_ore",
+    "redstone": "redstone_ore,deepslate_redstone_ore",
+    "lapis": "lapis_ore,deepslate_lapis_ore",
+    "diamond": "diamond_ore,deepslate_diamond_ore",
+    "emerald": "emerald_ore,deepslate_emerald_ore",
+}
+DEEP_ORE_LAYERS = {
+    "coal": 96,
+    "iron": 32,
+    "copper": 48,
+    "gold": 16,
+    "redstone": 12,
+    "lapis": 0,
+    "diamond": -54,
+    "emerald": 32,
+}
 PLANK_IDS = {
     "minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
     "minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
@@ -123,10 +158,8 @@ def _matches_resource(item_id, resource):
         return item_id.endswith(LOG_SUFFIX)
     if resource == "stone":
         return item_id in STONE_IDS
-    if resource == "coal":
-        return item_id == "minecraft:coal"
-    if resource == "iron":
-        return item_id in IRON_IDS
+    if resource in ORE_ITEM_IDS:
+        return item_id in ORE_ITEM_IDS[resource]
     if resource == "wheat":
         return item_id == "minecraft:wheat"
     return item_id == resource
@@ -240,13 +273,13 @@ class VanillaSkills:
                 normalized[parameter.name] = str(value)
         if name == "gather":
             resource = RESOURCE_ALIASES.get(str(normalized.get("resource", "logs")).strip().lower(), str(normalized.get("resource", "logs")).strip().lower())
-            if resource not in {"logs", "stone", "coal", "iron", "wheat"}:
-                raise SkillError("resource 仅支持 logs/stone/coal/iron/wheat 或对应中文")
+            if resource not in {"logs", "stone", "wheat"} and resource not in ORE_QUERIES:
+                raise SkillError("resource 仅支持原木/石头/小麦和各种原矿")
             normalized["resource"] = resource
             if not 1 <= int(normalized.get("count", 8)) <= 256:
                 raise SkillError("采集数量必须在1-256")
-            if not 6 <= int(normalized.get("radius", 12)) <= 12:
-                raise SkillError("扫描半径必须在6-12")
+            if not 6 <= int(normalized.get("radius", 12)) <= 16:
+                raise SkillError("扫描半径必须在6-16")
             if not 20 <= int(normalized.get("max_seconds", 180)) <= 600:
                 raise SkillError("采集时限必须在20-600秒")
         if name in {"container_transfer", "transfer", "transfer_item"}:
@@ -327,16 +360,8 @@ class VanillaSkills:
         return [row for row in (status.get("inventory_items") or []) if isinstance(row, dict) and int(row.get("slot", 99)) < 36]
 
     def item_count(self, status, item):
-        if item == "logs":
-            return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if _matches_resource(str(row.get("id", "")), "logs"))
-        if item == "stone":
-            return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if _matches_resource(str(row.get("id", "")), "stone"))
-        if item == "iron":
-            return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if _matches_resource(str(row.get("id", "")), "iron"))
-        if item == "coal":
-            return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if _matches_resource(str(row.get("id", "")), "coal"))
-        if item == "wheat":
-            return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if _matches_resource(str(row.get("id", "")), "wheat"))
+        if item in {"logs", "stone", "wheat"} or item in ORE_ITEM_IDS:
+            return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if _matches_resource(str(row.get("id", "")), item))
         return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if str(row.get("id", "")) == item)
 
     async def _pickup_near(self, x, y, z, resource, radius=5):
@@ -578,18 +603,14 @@ class VanillaSkills:
 
     # ----------------------------------------------------------------- gather
     async def _gather_scan_fallback(self, resource, radius):
-        """Raw coal/iron scan fallback when the normal exposed-resource scan is empty."""
-        queries = {
-            "coal": "coal_ore,deepslate_coal_ore",
-            "iron": "iron_ore,deepslate_iron_ore",
-        }
-        query = queries.get(resource)
+        """Raw ore scan fallback when the normal exposed-resource scan is empty."""
+        query = ORE_QUERIES.get(resource)
         if not query:
             return []
-        scan = await self._call("scan_blocks", {"radius": radius, "limit": 12, "block": query}, timeout=15)
+        scan = await self._call("scan_blocks", {"radius": radius, "limit": 16, "block": query}, timeout=15)
         rows = [row for row in (scan.get("blocks") or []) if isinstance(row, dict)]
         found = []
-        for row in rows[:8]:
+        for row in rows[:12]:
             try:
                 x, y, z = int(row["x"]), int(row["y"]), int(row["z"])
             except (KeyError, TypeError, ValueError):
@@ -615,23 +636,19 @@ class VanillaSkills:
         return found
 
     async def _nearest_raw_target(self, resource, radius):
-        queries = {
-            "coal": "coal_ore,deepslate_coal_ore",
-            "iron": "iron_ore,deepslate_iron_ore",
-        }
-        query = queries.get(resource)
+        query = ORE_QUERIES.get(resource)
         if not query:
             return None
-        scan = await self._call("scan_blocks", {"radius": radius, "limit": 8, "block": query}, timeout=15)
+        scan = await self._call("scan_blocks", {"radius": radius, "limit": 16, "block": query}, timeout=15)
         rows = [row for row in (scan.get("blocks") or []) if isinstance(row, dict)]
         return min(rows, key=lambda row: _num(row.get("distance"), 999)) if rows else None
 
     async def gather(self, resource="logs", count=8, radius=12, max_seconds=180, allow_night=False):
         resource = RESOURCE_ALIASES.get(str(resource).strip().lower(), str(resource).strip().lower())
-        if resource not in {"logs", "stone", "coal", "iron", "wheat"}:
-            raise SkillError("只支持原木、石头、煤、铁矿、小麦")
+        if resource not in {"logs", "stone", "wheat"} and resource not in ORE_QUERIES:
+            raise SkillError("只支持原木、石头、小麦和各种原矿")
         target = max(1, min(256, int(count)))
-        radius = max(6, min(12, int(radius)))
+        radius = max(6, min(16, int(radius)))
         status = await self.status()
         baseline = self.item_count(status, resource)
         deadline = time.monotonic() + max(20, min(600, int(max_seconds)))
@@ -648,6 +665,12 @@ class VanillaSkills:
             danger = [h for h in (status.get("hostiles") or []) if isinstance(h, dict) and _num(h.get("distance"), 999) <= 4 and h.get("line_of_sight", True) is not False]
             if danger:
                 raise SkillError("附近有敌对生物，采集已停止")
+            try:
+                eat_threshold = int((getattr(self.plugin, "config", {}) or {}).get("auto_eat_food", 12) or 12)
+            except (TypeError, ValueError):
+                eat_threshold = 12
+            if _num(status.get("food"), 20) <= eat_threshold or getattr(self.plugin, "_auto_eat_requested", False):
+                await self._auto_eat_if_needed(eat_threshold)
             scan = await self._call("scan", {"resource": resource, "radius": radius}, timeout=15)
             resources = [node for node in (scan.get("resources") or []) if isinstance(node, dict)]
             resources = [node for node in resources if (int(node.get("x", 0)), int(node.get("y", 0)), int(node.get("z", 0))) not in tried]
@@ -938,7 +961,7 @@ class VanillaSkills:
         if item in STONE_IDS or item == "stone":
             await self.gather("stone", need - have)
             return await self._count(item)
-        if item in IRON_IDS or item == "iron":
+        if item in ORE_ITEM_IDS["iron"] or item == "iron":
             await self.gather("iron", need - have)
             return await self._count(item)
         if item == "minecraft:coal":
@@ -1622,16 +1645,183 @@ class VanillaSkills:
         return await self.find_and_sleep(source=source, remember=bool(remember))
 
     # ------------------------------------------------------------------- L2
-    async def mine_ore(self, resource="coal", count=8, radius=12, max_seconds=180, allow_night=False, return_home=False):
+    async def _auto_eat_if_needed(self, threshold=None):
+        """Eat at a safe point inside a long task when food is low."""
+        requested = bool(getattr(self.plugin, "_auto_eat_requested", False))
+        config = getattr(self.plugin, "config", {}) or {}
+        try:
+            threshold = int(
+                threshold if threshold is not None
+                else config.get("auto_eat_food", 12) or 12
+            )
+        except (TypeError, ValueError):
+            threshold = 12
+        status = await self.status()
+        food = _num(status.get("food"), 20)
+        if not requested and food > threshold:
+            return False
+        hostiles = [
+            row for row in (status.get("hostiles") or [])
+            if isinstance(row, dict)
+            and _num(row.get("distance"), 999) <= 6
+            and row.get("line_of_sight", True) is not False
+        ]
+        if hostiles:
+            return False
+        try:
+            await self.eat_until_full()
+            setattr(self.plugin, "_auto_eat_requested", False)
+            return True
+        except SkillError:
+            setattr(self.plugin, "_auto_eat_requested", False)
+            return False
+
+    async def _ensure_pickaxe(self, min_remaining=40):
+        """Return True when a pickaxe with enough durability is available."""
+        status = await self.status()
+        for row in self.inventory_items(status):
+            item_id = str(row.get("id", "") or "")
+            if not item_id.endswith("_pickaxe"):
+                continue
+            try:
+                remaining = int(row.get("max_damage", 0) or 0) - int(row.get("damage", 0) or 0)
+            except (TypeError, ValueError):
+                remaining = 0
+            if remaining >= int(min_remaining):
+                return True
+        if (
+            self.item_count(status, "minecraft:iron_ingot") >= 3
+            and self.item_count(status, "minecraft:stick") >= 2
+        ):
+            try:
+                await self.craft("minecraft:iron_pickaxe", 1)
+                return True
+            except SkillError:
+                return False
+        return False
+
+    async def _dig_to_layer(self, target_y, deadline, step=8):
+        """Dig a safe 1x1 shaft down toward a target Y, returning progress."""
+        digs = 0
+        target_y = int(target_y)
+        while True:
+            if time.monotonic() >= deadline:
+                raise SkillError("向下挖掘到矿层超时")
+            status = await self.status()
+            position = status.get("position") or {}
+            try:
+                y = int(math.floor(float(position.get("y", 0))))
+            except (TypeError, ValueError):
+                raise SkillError("当前位置不可用，无法向下挖掘")
+            if y <= target_y + 2:
+                return digs
+            depth = max(1, min(int(step), y - target_y))
+            try:
+                await self._run("dig_down", {"depth": depth}, seconds=80)
+            except SkillError as exc:
+                text = str(exc)
+                if "预算" in text:
+                    raise
+                # A cave, fluid, slab/stairs, or protected block stops the
+                # shaft.  Scan from the current depth instead of forcing it.
+                return digs
+            after = await self.status()
+            after_position = after.get("position") or {}
+            try:
+                after_y = int(math.floor(float(after_position.get("y", y))))
+            except (TypeError, ValueError):
+                after_y = y
+            if after_y >= y:
+                raise SkillError("向下挖掘没有进展")
+            digs += y - after_y
+
+    async def mine_ore(self, resource="coal", count=8, radius=12, max_seconds=1200, allow_night=False, return_home=False):
         resource = RESOURCE_ALIASES.get(str(resource or "").strip().lower(), str(resource or "").strip().lower())
-        if resource not in {"coal", "iron", "stone"}:
-            raise SkillError("mine_ore 只支持 coal/iron/stone")
-        result = await self.gather(
-            resource, count, radius=radius, max_seconds=max_seconds, allow_night=allow_night,
-        )
+        if resource not in ORE_QUERIES and resource != "stone":
+            raise SkillError("mine_ore 只支持石头和各种原矿")
+        if not await self._ensure_pickaxe(80):
+            raise SkillError("没有耐久足够的镐，无法深层采矿；请先合成铁镐")
+        await self._auto_eat_if_needed()
+        target = max(1, min(32, int(count)))
+        radius = max(6, min(16, int(radius)))
+        deadline = time.monotonic() + max(30, min(1200, int(max_seconds)))
+        result = None
+        error = None
+        layer = DEEP_ORE_LAYERS.get(resource)
+        status = await self.status()
+        position = status.get("position") or {}
+        try:
+            current_y = int(math.floor(float(position.get("y", 0))))
+        except (TypeError, ValueError):
+            current_y = 0
+
+        if layer is not None and current_y > layer + 2:
+            # Deep ores: descend at the current mining site before scanning.
+            # Letting gather() explore first can walk back into the base, where
+            # the floor may be a slab and cannot be dug.
+            self._mark("mine_ore", "descending", 0, target, {"resource": resource, "target_y": layer})
+            await self._dig_to_layer(layer, deadline)
+            await self._auto_eat_if_needed()
+            remaining = int(max(20, deadline - time.monotonic()))
+            try:
+                result = await self.gather(
+                    resource, target, radius=radius,
+                    max_seconds=remaining, allow_night=allow_night,
+                )
+            except SkillError as exc:
+                error = exc
+        else:
+            try:
+                result = await self.gather(
+                    resource, target, radius=radius,
+                    max_seconds=min(120, max_seconds), allow_night=allow_night,
+                )
+            except SkillError as exc:
+                error = exc
+                if layer is None or not any(word in str(exc) for word in ("没有可采集", "不可采集")):
+                    raise
+                if current_y <= layer + 2:
+                    raise
+                self._mark("mine_ore", "descending", 0, target, {"resource": resource, "target_y": layer})
+                try:
+                    await self._dig_to_layer(layer, deadline)
+                except SkillError as dig_exc:
+                    error = dig_exc
+                remaining = int(max(20, deadline - time.monotonic()))
+                try:
+                    result = await self.gather(
+                        resource, target, radius=radius,
+                        max_seconds=remaining, allow_night=allow_night,
+                    )
+                    error = None
+                except SkillError as gather_exc:
+                    error = gather_exc
+
+        if result is None:
+            # Do not silently walk home on an ordinary mining failure; that
+            # hides the failure.  Only return when staying would be dangerous.
+            status = await self.status()
+            health = _num(status.get("health"), 20)
+            danger = any(
+                isinstance(row, dict) and _num(row.get("distance"), 999) <= 8
+                for row in (status.get("hostiles") or [])
+            )
+            if return_home and (health <= 8 or danger):
+                try:
+                    await self.return_home()
+                except SkillError:
+                    pass
+            raise error or SkillError("没有采集到目标矿物")
         result["skill"] = "mine_ore"
         if return_home:
-            result["return_home"] = await self.return_home()
+            self._mark("mine_ore", "returning", 0, target, {"resource": resource})
+            try:
+                result["return_home"] = await self.return_home()
+                result["returned"] = True
+            except SkillError as exc:
+                result["return_home_error"] = str(exc)
+                result["returned"] = False
+                result["goal_outcome"] = "partial"
         return result
 
     async def craft_item(self, item, count=1):
@@ -1772,29 +1962,102 @@ class VanillaSkills:
             }
         return None
 
-    async def _ascend_to_surface(self, max_steps=12):
-        """Climb out of a cave/room by walking short, breaking stair steps."""
-        directions = ((2, 0), (-2, 0), (0, 2), (0, -2))
+    async def _ascend_to_surface(self, min_y=None, max_steps=192):
+        """Climb out by mining a one-block-up staircase, then stepping onto it.
+
+        Baritone cannot reliably path to a solid cell inside rock, so ascent is
+        done deterministically: clear the two blocks above the next step, then
+        walk up onto the exposed floor.  This works in a 1x1 shaft as well as in
+        a room.  When ``min_y`` is given, climb to that level instead of relying
+        on ``sky_visible`` (an open shaft can see the sky while still being deep).
+        """
+        min_y = None if min_y is None else int(min_y)
+        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
         last_error = None
         for step in range(max_steps):
             status = await self.status()
-            if status.get("sky_visible", True) is not False:
-                return True
             current = self._coords(status)
             if current is None:
                 raise SkillError("当前位置不可用，无法向上挖掘")
+            if min_y is not None:
+                if current[1] >= min_y - 1:
+                    return True
+            elif status.get("sky_visible", True) is not False:
+                return True
             x = int(math.floor(current[0]))
             y = int(math.floor(current[1]))
             z = int(math.floor(current[2]))
+            if step % 8 == 0:
+                await self._auto_eat_if_needed()
             moved = False
             step_errors = []
-            # Try one staircase direction, then the opposite side if the first
-            # one is blocked.  More attempts would consume the break budget.
-            for offset in (0, 2):
+            for offset in range(4):
                 dx, dz = directions[(step + offset) % 4]
+                tx, ty, tz = x + dx, y + 1, z + dz
+                try:
+                    base = await self._call(
+                        "block_context", {"x": tx, "y": y, "z": tz}, timeout=8,
+                    )
+                except Exception:
+                    base = {}
+                base_block = str(base.get("block") or "")
+                if (
+                    "water" in base_block
+                    or "lava" in base_block
+                    or base.get("fluid")
+                ):
+                    continue
+                if base_block.endswith("air"):
+                    # In a cave there may be no adjacent step base.  Try to
+                    # place a filler block; the client will only accept it if a
+                    # visible sturdy support face exists.
+                    filler = next(
+                        (
+                            item for item in (
+                                "minecraft:cobblestone", "minecraft:dirt",
+                                "minecraft:stone", "minecraft:deepslate",
+                            )
+                            if self.item_count(status, item) > 0
+                        ),
+                        "",
+                    )
+                    if not filler:
+                        continue
+                    try:
+                        await self._run(
+                            "place_at",
+                            {"x": tx, "y": y, "z": tz, "item": filler},
+                            seconds=8,
+                        )
+                    except SkillError:
+                        continue
+                if base_block and any(
+                    word in base_block for word in ("chest", "barrel", "furnace", "hopper", "bed")
+                ):
+                    continue
+                # A 1x2 step has a solid ceiling directly above the player.
+                # Clear it first, otherwise Baritone cannot jump onto the step.
+                try:
+                    await self._run(
+                        "mine_at",
+                        {"x": x, "y": y + 2, "z": z},
+                        seconds=8,
+                    )
+                except SkillError as exc:
+                    pass
+                for dy in (1, 2):
+                    try:
+                        await self._run(
+                            "mine_at",
+                            {"x": tx, "y": y + dy, "z": tz},
+                            seconds=8,
+                        )
+                    except SkillError as exc:
+                        # Air is fine; a protected block will make the move
+                        # fail and the next direction will be tried.
+                        pass
                 error = await self.plugin._approach_target(
-                    x + dx, min(320, y + 2), z + dz,
-                    seconds=30, reach=2.0, allow_break=True,
+                    tx, ty, tz, seconds=12, reach=1.2, allow_break=False,
                 )
                 after = await self.status()
                 after_position = self._coords(after)
@@ -1809,6 +2072,54 @@ class VanillaSkills:
                 raise SkillError("向上挖掘没有进展" + detail)
         raise SkillError("未能到达地表")
 
+    async def _hop_toward_home(self, target, max_steps=8):
+        """Move upward through existing standable cells before digging.
+
+        The client limits one navigation request to 12 blocks vertically, so a
+        home 13+ blocks above cannot be a single goto.  Probe standable cells
+        between the current position and the bed (stairs/rooms), and only fall
+        back to mining if no such route exists.
+        """
+        target_x = int(target["x"])
+        target_y = int(target["y"])
+        target_z = int(target["z"])
+        resolver = getattr(self.plugin, "_resolve_navigation_target", None)
+        if not callable(resolver):
+            return False
+        for _ in range(max_steps):
+            status = await self.status()
+            current = self._coords(status)
+            if current is None:
+                return False
+            if target_y - current[1] <= 8:
+                return True
+            moved = False
+            for step in (8, 4, 2):
+                step_y = min(target_y, int(current[1]) + step)
+                if step_y <= current[1] + 1:
+                    continue
+                resolved, _info = await self.plugin._resolve_navigation_target(
+                    target_x, step_y, target_z,
+                )
+                if resolved is None:
+                    continue
+                if resolved[1] <= current[1] + 1:
+                    continue
+                error = await self.plugin._approach_target(
+                    resolved[0], resolved[1], resolved[2],
+                    seconds=30, reach=2.0,
+                )
+                after = await self.status()
+                after_position = self._coords(after)
+                if after_position is not None and after_position[1] > current[1] + 0.5:
+                    moved = True
+                    break
+                if error:
+                    continue
+            if not moved:
+                return False
+        return False
+
     async def return_home(self, reach=2.0):
         status = await self.status()
         target = self._home_target(status)
@@ -1819,6 +2130,7 @@ class VanillaSkills:
         if target.get("dimension") and target["dimension"] != status.get("dimension"):
             raise SkillError("家床记录属于另一个维度")
         reach = max(0.5, min(8.0, float(reach)))
+        await self._auto_eat_if_needed()
         current = self._coords(status)
         if current is None:
             raise SkillError("当前位置不可用，无法回家")
@@ -1828,33 +2140,42 @@ class VanillaSkills:
         direct_error = None
         ascended = False
 
-        # Normal route first when the bed is nearby or we are already outside.
+        # 1) Normal route first when the bed is nearby or we are already outside.
         # This avoids digging up through a base when the stairs are usable.
         if status.get("sky_visible", True) is not False or above <= 12:
             try:
                 result = await self.return_to(target, reach=reach)
                 result["skill"] = "return_home"
                 result["ascended"] = False
+                result["hopped"] = False
                 result["tunneled"] = False
                 return result
             except SkillError as exc:
                 direct_error = exc
 
-        # Underground with the bed above: climb toward the surface and retry.
-        if status.get("sky_visible", True) is False and above > 2:
+        tunnel_error = None
+        hopped = False
+
+        # 2) Use existing stairs/rooms before digging through player blocks.
+        if above > 2:
             try:
-                await self._ascend_to_surface()
-                ascended = True
-                result = await self.return_to(target, reach=reach)
-                result["skill"] = "return_home"
-                result["ascended"] = True
-                result["tunneled"] = False
-                return result
+                if await self._hop_toward_home(target):
+                    hopped = True
+                    try:
+                        result = await self.return_to(target, reach=reach)
+                        result["skill"] = "return_home"
+                        result["ascended"] = False
+                        result["hopped"] = True
+                        result["tunneled"] = False
+                        return result
+                    except SkillError as exc:
+                        if direct_error is None:
+                            direct_error = exc
             except SkillError as exc:
                 if direct_error is None:
                     direct_error = exc
 
-        # Last resort: a bounded tunnel for a nearby bed behind walls/terrain.
+        # 3) Short tunnel for a nearby bed behind walls/terrain.
         if distance <= 32 and abs(above) <= 12:
             try:
                 await self.tunnel_to(target, max_distance=32, reach=reach)
@@ -1863,15 +2184,36 @@ class VanillaSkills:
                     "target": {"x": int(target["x"]), "y": int(target["y"]), "z": int(target["z"])},
                     "distance": distance,
                     "arrived": True,
-                    "ascended": ascended,
+                    "ascended": False,
+                    "hopped": hopped,
                     "tunneled": True,
                 }
             except SkillError as exc:
-                if direct_error is not None:
-                    raise SkillError(f"回家失败：{direct_error}；隧道失败：{exc}") from exc
-                raise
+                tunnel_error = exc
+
+        # 4) Direct and short-tunnel routes failed.  If the bed is above us,
+        # climb a staircase to the bed's level; do not trust sky_visible, because
+        # an open shaft can see the sky while still being deep underground.
+        if above > 2:
+            try:
+                await self._ascend_to_surface(min_y=int(round(target_point[1])))
+                ascended = True
+                result = await self.return_to(target, reach=reach)
+                result["skill"] = "return_home"
+                result["ascended"] = True
+                result["hopped"] = hopped
+                result["tunneled"] = False
+                return result
+            except SkillError as exc:
+                if direct_error is None:
+                    direct_error = exc
+
+        if direct_error is not None and tunnel_error is not None:
+            raise SkillError(f"回家失败：{direct_error}；隧道失败：{tunnel_error}") from tunnel_error
         if direct_error is not None:
             raise direct_error
+        if tunnel_error is not None:
+            raise tunnel_error
         raise SkillError("回家失败：目标太远且无法直接到达")
 
     # ---------------------------------------------------------------- resupply
@@ -1995,8 +2337,8 @@ class VanillaSkills:
     # ---------------------------------------------------------------- explore
     async def explore(self, goal="generic", max_seconds=120, max_distance=64, return_home=False, allow_night=False):
         goal = str(goal or "generic").strip().lower()
-        if goal not in {"generic", "logs", "stone", "coal", "iron", "wheat", "village"}:
-            raise SkillError("goal 只能是 generic/logs/stone/coal/iron/wheat/village")
+        if goal not in {"generic", "logs", "stone", "wheat", "village"} and goal not in ORE_QUERIES:
+            raise SkillError("goal 只能是 generic/logs/stone/wheat/village 或各种原矿")
         deadline = time.monotonic() + max(10, min(300, int(max_seconds)))
         max_distance = max(16, min(128, int(max_distance)))
         status = await self.status()
@@ -2011,7 +2353,7 @@ class VanillaSkills:
         visits = 0
         failures = 0
         stopped = "no_frontier"
-        scan_resource = goal if goal in {"logs", "stone", "coal", "iron", "wheat"} else "logs"
+        scan_resource = goal if goal in {"logs", "stone", "wheat"} else "logs"
 
         def add_found(kind, row, name=""):
             try:
@@ -2051,7 +2393,10 @@ class VanillaSkills:
             for row in (scan.get("resources") or []):
                 if isinstance(row, dict):
                     block = str(row.get("block") or "")
-                    add_found(block or (goal if goal in {"logs", "stone", "coal", "iron", "wheat"} else "resource"), row, block)
+                    add_found(block or (goal if goal in {"logs", "stone", "wheat"} else "resource"), row, block)
+            if goal in ORE_QUERIES:
+                for row in await self._gather_scan_fallback(goal, 12):
+                    add_found(str(row.get("block") or goal), row, str(row.get("block") or goal))
             if goal in {"generic", "village"}:
                 entities = await self._call("scan_entities", {"radius": 16, "limit": 32}, timeout=10)
                 for row in (entities.get("entities") or []):

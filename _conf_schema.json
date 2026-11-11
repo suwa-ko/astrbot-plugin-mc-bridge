@@ -132,6 +132,18 @@
     "default": 2,
     "hint": "没有事件能力时的兜底轮询；有 survival_events 能力时会自动放宽到至少 5 秒。"
   },
+  "auto_resume_after_disconnect": {
+    "description": "客户端重连后自动续跑中断任务",
+    "type": "bool",
+    "default": true,
+    "hint": "只对采集/挖矿/回家/隧道任务生效；低血或有敌人时不恢复，最多连续恢复 2 次。"
+  },
+  "auto_resume_disconnect_seconds": {
+    "description": "断线后允许自动续跑的时间窗口（秒）",
+    "type": "int",
+    "default": 120,
+    "hint": "超过这个时间不自动恢复，避免隔很久突然继续旧任务。"
+  },
   "auto_flee_health": {
     "description": "强制撤离血量（0-20）",
     "type": "int",
@@ -153,7 +165,7 @@
   "auto_eat_food": {
     "description": "低于这个饱食度（0-20）自动吃东西",
     "type": "int",
-    "default": 8
+    "default": 12
   },
   "auto_eat_health_food": {
     "description": "受伤时补到多少饱食度",
@@ -311,6 +323,30 @@
     "default": 64,
     "hint": "1-512；保护区域和容器不受预算影响，始终禁止破坏。"
   },
+  "break_budget_per_mining_task": {
+    "description": "深层采矿任务最多破坏的方块数",
+    "type": "int",
+    "default": 640,
+    "hint": "1-2048；用于 mine_ore，需覆盖下挖、采集和回家爬升。普通移动仍受 break_budget_per_task 限制。"
+  },
+  "break_budget_per_return_task": {
+    "description": "回家任务最多破坏的方块数",
+    "type": "int",
+    "default": 640,
+    "hint": "1-2048；用于 return_home 的向上挖掘和脱困。"
+  },
+  "break_budget_per_tunnel_task": {
+    "description": "隧道接近任务最多破坏的方块数",
+    "type": "int",
+    "default": 128,
+    "hint": "1-1024；用于 tunnel_to。"
+  },
+  "break_budget_per_gather_task": {
+    "description": "采集任务最多破坏的方块数",
+    "type": "int",
+    "default": 128,
+    "hint": "1-1024；用于 gather。"
+  },
   "break_allow_unnatural": {
     "description": "允许破坏非自然方块",
     "type": "bool",
@@ -321,7 +357,7 @@
     "description": "暴露给模型的工具范围",
     "type": "string",
     "default": "simple",
-    "hint": "simple 只暴露常用入口（推荐）；full 暴露全部73个工具，适合调试。"
+    "hint": "simple 只暴露常用入口（推荐）；full 暴露全部75个工具，适合调试。"
   },
   "short_task_wait_seconds": {
     "description": "短任务有界等待秒数",

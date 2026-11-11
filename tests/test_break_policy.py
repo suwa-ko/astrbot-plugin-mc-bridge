@@ -66,6 +66,16 @@ class BreakPolicyTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("任务", reason)
 
+    def test_mining_task_budget_override_resets_for_normal_task(self):
+        with tempfile.TemporaryDirectory() as folder:
+            policy = break_mod.BreakPolicy(Path(folder) / "regions.json", per_action=8, per_task=8)
+            policy.begin_task("mine", per_task=32)
+            for index in range(4):
+                self.assertTrue(policy.check(index, 64, 1, "minecraft:stone", count=8)[0])
+            self.assertEqual(policy.remaining_task_budget(), 0)
+            policy.begin_task("walk")
+            self.assertEqual(policy.remaining_task_budget(), 8)
+
     def test_regions_persist_and_remove(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "regions.json"

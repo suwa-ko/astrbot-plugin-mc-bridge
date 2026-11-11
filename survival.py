@@ -224,11 +224,18 @@ class SurvivalSupervisor:
                         key="notify",
                     )
                 return
-            # Do not fight/eat in the middle of an owner task.  Critical danger
-            # is the only exception; it cancels the task and flees.
+            # Owner tasks own the action slot, so do not start a competing eat
+            # action.  Request a safe-point meal instead; the task skills consume
+            # this flag between operations.
             if self._task_busy():
                 if nearest is not None and health <= self._flee_health():
                     await self._flee(status, nearest, "当前任务中血量过低")
+                elif (
+                    status.get("survival_busy") is False
+                    and (nearest is None or nearest["distance"] > 8)
+                    and self._should_eat(health, max_health, food)
+                ):
+                    setattr(self.plugin, "_auto_eat_requested", True)
                 return
             if nearest is not None and time.monotonic() < self.retreat_until and health > self._flee_health():
                 return
@@ -274,7 +281,7 @@ class SurvivalSupervisor:
         return _num(self._cfg("auto_fight_health", 14), 14.0)
 
     def _eat_food(self) -> float:
-        return _num(self._cfg("auto_eat_food", 8), 8.0)
+        return _num(self._cfg("auto_eat_food", 12), 12.0)
 
     def _eat_health_food(self) -> float:
         return _num(self._cfg("auto_eat_health_food", 18), 18.0)

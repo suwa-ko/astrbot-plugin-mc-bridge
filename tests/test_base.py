@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from collections import deque
 from astrbot.core.agent.tool import FunctionTool
@@ -328,6 +329,67 @@ class Fixes(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["inline"])
         self.assertIn("未在", payload["note"])
         self.assertFalse(item.suppress_notify)
+
+    def test_break_budget_matches_task_type(self):
+        p = make_plugin()
+        p.config.update({
+            "break_budget_per_mining_task": 640,
+            "break_budget_per_return_task": 512,
+            "break_budget_per_tunnel_task": 128,
+            "break_budget_per_gather_task": 192,
+        })
+        self.assertEqual(p._break_budget_for_task(SimpleNamespace(target="mine_ore")), 640)
+        self.assertEqual(p._break_budget_for_task(SimpleNamespace(target="return_home")), 512)
+        self.assertEqual(p._break_budget_for_task(SimpleNamespace(target="tunnel_to")), 128)
+        self.assertEqual(p._break_budget_for_task(SimpleNamespace(target="gather")), 192)
+        self.assertIsNone(p._break_budget_for_task(SimpleNamespace(target="goto")))
+
+    async def test_same_turn_tasks_are_chained_in_time_order(self):
+        p = make_plugin()
+        counter = {"value": 0}
+        seen = []
+
+        def enqueue(tasks, priority=10):
+            for task in tasks:
+                counter["value"] += 1
+                task.task_id = f"t{counter['value']}"
+                seen.append(task)
+            return True
+
+        p._enqueue_tasks = enqueue
+        event = Event()
+        token = m.CURRENT_EVENT.set(event)
+        try:
+            self.assertTrue(p._queue_skill("first", "gather", resource="coal"))
+            self.assertTrue(p._queue_skill("second", "gather", resource="iron"))
+        finally:
+            m.CURRENT_EVENT.reset(token)
+        second = p._task_chain["last"]
+        self.assertEqual(second, "t2")
+        self.assertEqual(p._task_chain["event"], event)
+        self.assertEqual(seen[0].dependencies, ())
+        self.assertEqual(seen[1].dependencies, ("t1",))
+
+    async def test_client_reconnect_resumes_interrupted_skill(self):
+        p = make_plugin()
+        p._interrupted_task = {
+            "opcode": "mine_ore",
+            "params": {"resource": "redstone", "count": 1, "return_home": True},
+            "priority": 10,
+            "route": None,
+            "checkpoint": {"stage": "descending"},
+            "at": time.time(),
+        }
+        p._resume_attempts = 0
+        p._call = AsyncMock(return_value={"health": 20, "hostiles": []})
+        p._start_agent_task = AsyncMock(return_value="task-resume")
+        p._task_chat = AsyncMock()
+        await p._client_ready({})
+        p._start_agent_task.assert_awaited_once()
+        args = p._start_agent_task.await_args.args
+        self.assertEqual(args[0], "mine_ore")
+        self.assertEqual(args[1]["resource"], "redstone")
+        self.assertEqual(p._resume_attempts, 1)
 
     async def test_worker_suppresses_inline_completion_notification(self):
         p = make_plugin()

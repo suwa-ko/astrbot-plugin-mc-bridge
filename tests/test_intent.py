@@ -31,6 +31,20 @@ class IntentTests(unittest.TestCase):
         self.assertEqual(result["params"]["resource"], "stone")
         self.assertEqual(result["params"]["count"], 32)
 
+    def test_mine_redstone_then_return_home(self):
+        result = intent.classify_task("mc去后山挖一个红石，然后回家")
+        self.assertEqual(result["opcode"], "mine_ore")
+        self.assertEqual(result["params"]["resource"], "redstone")
+        self.assertEqual(result["params"]["count"], 1)
+        self.assertTrue(result["params"]["return_home"])
+
+    def test_mine_diamond_and_gold(self):
+        diamond = intent.classify_task("挖3个钻石")
+        self.assertEqual(diamond["opcode"], "mine_ore")
+        self.assertEqual(diamond["params"]["resource"], "diamond")
+        gold = intent.classify_task("mc挖两个金矿")
+        self.assertEqual(gold["params"]["resource"], "gold")
+
     def test_craft_iron_pickaxe(self):
         result = intent.classify_task("合成一把铁镐")
         self.assertEqual(result["opcode"], "craft_item")

@@ -11,6 +11,12 @@ import re
 RESOURCE_ALIASES = {
     "煤": "coal", "煤矿": "coal", "煤炭": "coal", "coal": "coal",
     "铁": "iron", "铁矿": "iron", "iron": "iron",
+    "铜": "copper", "铜矿": "copper", "copper": "copper",
+    "金": "gold", "金矿": "gold", "gold": "gold",
+    "红石": "redstone", "红石矿": "redstone", "redstone": "redstone",
+    "青金石": "lapis", "青金石矿": "lapis", "lapis": "lapis",
+    "钻石": "diamond", "钻石矿": "diamond", "diamond": "diamond",
+    "绿宝石": "emerald", "绿宝石矿": "emerald", "emerald": "emerald",
     "石头": "stone", "圆石": "stone", "石料": "stone", "stone": "stone",
     "木头": "logs", "原木": "logs", "树": "logs", "log": "logs", "wood": "logs",
 }
@@ -102,6 +108,19 @@ def classify_task(text):
     if not body:
         return _none(original, "空文本")
 
+    for name in (
+        "煤矿", "煤炭", "煤", "铁矿", "铁", "铜矿", "铜",
+        "金矿", "金", "红石矿", "红石", "redstone",
+        "青金石矿", "青金石", "lapis", "钻石矿", "钻石", "diamond",
+        "绿宝石矿", "绿宝石", "emerald", "石头", "圆石", "石料", "stone",
+    ):
+        if name in body and re.search(r"挖|采|矿|mine", body):
+            resource = RESOURCE_ALIASES.get(name, "stone")
+            params = {"resource": resource, "count": _count(body, 8)}
+            if re.search(r"回来|回家|返回|带回|拿回", body):
+                params["return_home"] = True
+            return _result("mine_ore", params, 0.92, "挖矿", original)
+
     if re.search(r"(回家|家床|家里).{0,8}(睡|睡觉)|(睡|睡觉).{0,8}(家床|家里)", body):
         return _result("find_and_sleep", {"source": "home"}, 0.94, "回家床睡觉", original)
     if re.search(r"睡|床", body):
@@ -115,14 +134,6 @@ def classify_task(text):
     if re.search(r"收割|收获|种地|农田|农场|farm", body):
         operation = "both" if "种" in body else "harvest"
         return _result("farm", {"operation": operation}, 0.82, "农业任务", original)
-
-    for name in ("煤矿", "煤炭", "煤", "铁矿", "铁", "石头", "圆石", "石料"):
-        if name in body and re.search(r"挖|采|矿|mine", body):
-            resource = RESOURCE_ALIASES.get(name, "stone")
-            params = {"resource": resource, "count": _count(body, 8)}
-            if re.search(r"回来|回家|返回|带回|拿回", body):
-                params["return_home"] = True
-            return _result("mine_ore", params, 0.92, "挖矿", original)
 
     if re.search(r"砍|原木|木头|树|log|wood", body):
         return _result("gather", {"resource": "logs", "count": _count(body, 8)}, 0.9, "采木", original)

@@ -22,10 +22,12 @@
   "auto_survive": true,
   "auto_survive_mode": "notify",
   "auto_survive_interval": 2,
+  "auto_resume_after_disconnect": true,
+  "auto_resume_disconnect_seconds": 120,
   "auto_flee_health": 4,
   "auto_fight_health": 14,
   "auto_hold_health": 6,
-  "auto_eat_food": 8,
+  "auto_eat_food": 12,
   "auto_eat_health_food": 18,
   "auto_attack_range": 6,
   "auto_fight_max_targets": 2,
@@ -50,5 +52,9 @@
   "tool_profile": "simple",
   "break_budget_per_action": 8,
   "break_budget_per_task": 64,
+  "break_budget_per_mining_task": 640,
+  "break_budget_per_return_task": 640,
+  "break_budget_per_tunnel_task": 128,
+  "break_budget_per_gather_task": 128,
   "break_allow_unnatural": false
 }

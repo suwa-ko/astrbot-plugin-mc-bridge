@@ -915,17 +915,33 @@ class VanillaSkills:
                     opened = True
                     await asyncio.sleep(0.4)
             before = await self._count(item)
-            remaining = target
-            while remaining > 0:
+            crafted = 0
+            while crafted < target:
                 batch_before = await self._count(item)
-                await self._run("craft", {"item": item, "count": min(64, remaining)}, seconds=15)
+                result = await self._run(
+                    "craft",
+                    {"item": item, "count": min(64, target - crafted)},
+                    seconds=15,
+                )
+                actual = 0
+                if isinstance(result, dict):
+                    try:
+                        actual = int(result.get("produced", 0) or 0)
+                    except (TypeError, ValueError):
+                        actual = 0
                 after = await self._count(item)
-                gained = after - batch_before
+                gained = max(actual, after - batch_before)
                 if gained <= 0:
                     raise SkillError(f"合成没有确认入包：{item}")
-                remaining = target - (after - before)
-                self._mark("craft", "crafting", after - before, target, {"item": item})
-            return {"skill": "craft_recipe", "item": item, "requested": target, "produced": await self._count(item) - before}
+                crafted += gained
+                self._mark("craft", "crafting", crafted, target, {"item": item})
+            total = await self._count(item)
+            return {
+                "skill": "craft_recipe",
+                "item": item,
+                "requested": target,
+                "produced": max(crafted, total - before),
+            }
         finally:
             if opened:
                 try:
@@ -1066,14 +1082,23 @@ class VanillaSkills:
         if width > 2 or height > 2:
             await self._ensure_table()
         remaining = need - have
+        crafted = 0
         while remaining > 0:
-            before = await self._count(item)
-            await self.craft_recipe(item, min(64, remaining))
-            after = await self._count(item)
-            if after <= before:
+            outcome = await self.craft_recipe(item, min(64, remaining))
+            produced = 0
+            if isinstance(outcome, dict):
+                try:
+                    produced = int(outcome.get("produced", 0) or 0)
+                except (TypeError, ValueError):
+                    produced = 0
+            if produced <= 0:
+                after = await self._count(item)
+                produced = max(0, after - (have + crafted))
+            if produced <= 0:
                 raise SkillError(f"合成没有确认入包：{item}")
-            remaining = need - after
-        return await self._count(item)
+            crafted += produced
+            remaining = need - have - crafted
+        return max(await self._count(item), have + crafted)
 
     async def craft(self, item, count=1):
         item = str(item or "").strip()
@@ -1082,9 +1107,14 @@ class VanillaSkills:
         item = item if ":" in item else "minecraft:" + item
         target = max(1, min(64, int(count)))
         before = await self._count(item)
-        await self.ensure_item(item, before + target, depth=0)
+        ensured = await self.ensure_item(item, before + target, depth=0)
         after = await self._count(item)
-        return {"skill": "craft", "item": item, "requested": target, "produced": max(0, after - before)}
+        return {
+            "skill": "craft",
+            "item": item,
+            "requested": target,
+            "produced": max(0, max(after, int(ensured or 0)) - before),
+        }
 
     # ------------------------------------------------------------------ smelt
     async def _find_furnace(self, radius=12):

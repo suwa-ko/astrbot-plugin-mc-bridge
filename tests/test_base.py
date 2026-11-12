@@ -59,8 +59,8 @@ def make_plugin():
 class Fixes(unittest.IsolatedAsyncioTestCase):
     async def test_all_tools_have_guard_and_preserve_signatures(self):
         source = Path(os.environ["MC_PLUGIN_FILE"]).read_text()
-        self.assertEqual(source.count('@filter.llm_tool(name="mc_'), 75)
-        self.assertEqual(source.count('@require_mc_tool("mc_'), 75)
+        self.assertEqual(source.count('@filter.llm_tool(name="mc_'), 76)
+        self.assertEqual(source.count('@require_mc_tool("mc_'), 76)
         self.assertIn("x", inspect.signature(m.McBridgePlugin.mc_goto).parameters)
 
     async def test_non_admin_cannot_directly_move(self):

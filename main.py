@@ -943,6 +943,39 @@ class McBridgePlugin(Star):
         if event is not None and task_id:
             self._task_chain = {"event": event, "last": str(task_id)}
 
+    def _plan_limits(self, steps):
+        seconds = 0
+        breaks = 0
+        resources = set()
+        for step in steps:
+            opcode = str(step.get("opcode") or "").strip()
+            spec = self._agent_skill_spec(opcode)
+            if spec is None or opcode in {"plan"}:
+                raise SkillError(f"计划步骤不支持：{opcode or '空'}")
+            seconds += int(spec.max_seconds)
+            resources.update(resource.value for resource in spec.resources)
+            breaks += {
+                "mine_ore": 640, "return_home": 640,
+                "tunnel_to": 128, "gather": 128,
+            }.get(opcode, 64)
+        return min(3600, max(30, seconds)), min(4096, max(64, breaks)), tuple(sorted(resources))
+
+    def _enqueue_plan(self, steps, *, priority: int = int(Priority.OWNER), goal: str = "多步骤计划"):
+        seconds, breaks, resources = self._plan_limits(steps)
+        task = QueuedTask(
+            kind="plan",
+            goal=goal,
+            target="plan",
+            params={"steps": steps, "break_budget": breaks},
+            priority=int(priority),
+            resources=resources or ("actor",),
+            budget_seconds=float(seconds),
+        )
+        if not self._enqueue_tasks([task], priority=int(priority)):
+            return ""
+        self._remember_task_chain(task.task_id)
+        return task.task_id
+
     def _queue_skill(self, label: str, name: str, **params) -> bool:
         self._resume_attempts = 0
         spec = self._agent_skill_spec(name)
@@ -1648,6 +1681,11 @@ class McBridgePlugin(Star):
         }
         setting = keys.get(opcode)
         if setting is None:
+            if opcode == "plan":
+                try:
+                    return max(64, min(4096, int((getattr(item, "params", {}) or {}).get("break_budget", 2048) or 2048)))
+                except (TypeError, ValueError):
+                    return 2048
             return None
         key, default = setting
         try:
@@ -1878,9 +1916,74 @@ class McBridgePlugin(Star):
         if item.kind == "come":
             await self._run_come_task(item)
             return None
+        if item.kind == "plan":
+            return await self._run_plan_task(item)
         if item.kind == "skill":
             return await self._skills_for().run(str(item.target or ""), getattr(item, "params", {}))
         raise BridgeError("未知任务类型")
+
+    async def _run_plan_task(self, item):
+        """Run a bounded sequence of skills in one task, with checkpoints.
+
+        A failed step stops the plan unless the step sets ``continue_on_failure``.
+        Intermediate steps never trigger the normal per-task chat notification;
+        the plan sends one final summary instead.
+        """
+        steps = [step for step in (item.params.get("steps") or []) if isinstance(step, dict)]
+        if not steps:
+            raise SkillError("计划没有步骤")
+        results = []
+        completed_count = 0
+        failed = 0
+        for index, step in enumerate(steps):
+            opcode = str(step.get("opcode") or "").strip()
+            params = dict(step.get("params") or {})
+            if not opcode:
+                raise SkillError("计划步骤缺少 opcode")
+            if opcode in {"goto", "come"}:
+                x = int(params.get("x", 0) or 0)
+                y = int(params.get("y", 0) or 0)
+                z = int(params.get("z", 0) or 0)
+                step_item = QueuedTask(
+                    kind=opcode, goal=f"{opcode} {x} {y} {z}",
+                    target=str(params.get("player") or ""), x=x, y=y, z=z,
+                    params=params, task_id=f"{item.task_id}-s{index}",
+                )
+            else:
+                step_item = QueuedTask(
+                    kind="skill", goal=opcode, target=opcode,
+                    params=params, task_id=f"{item.task_id}-s{index}",
+                )
+            try:
+                result = await self._execute_task_item(step_item)
+                results.append({"opcode": opcode, "status": "completed", "result": result})
+                completed_count += 1
+                item.checkpoint = {"plan": {"next": index + 1, "results": results[-4:]}}
+            except asyncio.CancelledError:
+                item.checkpoint = {"plan": {"next": index, "results": results[-4:]}}
+                raise
+            except Exception as exc:
+                failed += 1
+                results.append({"opcode": opcode, "status": "failed", "error": str(exc)})
+                keep_going = bool(step.get("continue_on_failure", False))
+                item.checkpoint = {"plan": {"next": index + (1 if keep_going else 0), "results": results[-4:]}}
+                if not keep_going:
+                    break
+        outcome = "fulfilled" if failed == 0 else ("partial" if completed_count else "unmet")
+        summary = {
+            "skill": "plan",
+            "goal_outcome": outcome,
+            "completed": completed_count,
+            "total": len(steps),
+            "failed": failed,
+            "steps": results[-8:],
+        }
+        label = {"fulfilled": "计划完成", "partial": "计划部分完成", "unmet": "计划未达成"}[outcome]
+        await self._task_chat(
+            f"{label}：{completed_count}/{len(steps)} 步成功" + (f"，{failed} 步失败" if failed else ""),
+            kind="plan",
+        )
+        return summary
 
     async def _renew_task_lease(self, item, budget):
         scheduler = self._scheduler_for()
@@ -2493,7 +2596,7 @@ class McBridgePlugin(Star):
             "mc_scan 扫描附近方块/实体；mc_set_respawn 设置重生床；mc_recipes 查配方；"
             "mc_memory 查询/记录地点（模型只看到 place_ref 和安全标签，精确坐标由本地回执卡片显示）；"
             "mc_goto 支持 place_ref 导航；mc_protect 管理保护区域；mc_screenshot 只在确实需要看画面时使用。"
-            "多步骤任务用 mc_task_start：opcode 支持 mine_ore(resource,count,return_home)（煤/铁/铜/金/红石/青金石/钻石/绿宝石，深层矿会自动向下挖）、gather(resource,count)、craft(item,count)、smelt(item,count)、"
+            "多步骤任务优先用 mc_plan 一次提交 steps 数组，按顺序执行，完成或失败后统一通知；只在需要单独控制某一步时用 mc_task_start。mc_task_start 的 opcode 支持 mine_ore(resource,count,return_home)（煤/铁/铜/金/红石/青金石/钻石/绿宝石，深层矿会自动向下挖）、gather(resource,count)、craft(item,count)、smelt(item,count)、"
             "container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、"
             "farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、"
             "explore(goal,max_seconds,max_distance)、return_to(target_pos)、return_home(reach)、tunnel_to(target_pos,max_distance,reach)、resupply(...)、trade_for(item,count,radius)；"
@@ -3639,7 +3742,7 @@ class McBridgePlugin(Star):
             item is not None
             and not self._closing
             and getattr(item, "kind", "") == "skill"
-            and str(getattr(item, "target", "") or "") in {"mine_ore", "return_home", "tunnel_to", "gather"}
+            and str(getattr(item, "target", "") or "") in {"mine_ore", "return_home", "tunnel_to", "gather", "plan"}
         ):
             interrupted = {
                 "opcode": str(getattr(item, "target", "") or ""),
@@ -3694,6 +3797,20 @@ class McBridgePlugin(Star):
         if opcode == "mine_ore" and stage == "returning":
             opcode = "return_home"
             params = {"reach": 2.0}
+        if opcode == "plan":
+            plan_checkpoint = (pending.get("checkpoint") or {}).get("plan") or {}
+            try:
+                next_index = max(0, int(plan_checkpoint.get("next", 0) or 0))
+            except (TypeError, ValueError):
+                next_index = 0
+            all_steps = [step for step in (params.get("steps") or []) if isinstance(step, dict)]
+            remaining_steps = all_steps[next_index:]
+            if not remaining_steps:
+                return
+            params = {
+                "steps": remaining_steps,
+                "break_budget": params.get("break_budget", 2048),
+            }
         self._resume_attempts += 1
         route = pending.get("route")
         if route is None:
@@ -3702,9 +3819,17 @@ class McBridgePlugin(Star):
         try:
             if route is not UNSET:
                 route_token = REPLY_ROUTE.set(route)
-            await self._start_agent_task(
-                opcode, params, int(pending.get("priority", 10) or 10),
-            )
+            if opcode == "plan":
+                task_id = self._enqueue_plan(
+                    params["steps"], priority=int(pending.get("priority", 10) or 10),
+                    goal="恢复多步骤计划",
+                )
+                if not task_id:
+                    raise SkillError("任务队列已满")
+            else:
+                await self._start_agent_task(
+                    opcode, params, int(pending.get("priority", 10) or 10),
+                )
             await self._task_chat(
                 "Minecraft重连，已自动继续之前中断的任务",
                 route=route, kind="resume",
@@ -3800,7 +3925,7 @@ class McBridgePlugin(Star):
             policy.ensure_task(task_id)
             per_action = int(policy.per_action)
             opcode = str(getattr(getattr(self, "_task_current", None), "target", "") or "")
-            if opcode in {"mine_ore", "return_home", "tunnel_to", "gather"}:
+            if opcode in {"mine_ore", "return_home", "tunnel_to", "gather", "plan"}:
                 try:
                     mining_action = int(self.config.get("break_budget_per_mining_action", 32) or 32)
                 except (TypeError, ValueError):
@@ -5756,6 +5881,57 @@ class McBridgePlugin(Star):
             "l2": l2,
             "client_protocol": self.bridge.client_info.get("protocol", 1),
             "client_capabilities": str(self.bridge.client_info.get("capabilities", "")).split(","),
+        }, ensure_ascii=False)
+
+    @filter.llm_tool(name="mc_plan")
+    @require_mc_tool("mc_plan")
+    async def mc_plan(self, event: AstrMessageEvent, steps_json: str, priority: int = int(Priority.NORMAL),
+                      dry_run: bool = False):
+        """把多步骤任务一次提交为顺序计划；每步失败默认停止，可标记继续。
+
+        Args:
+            steps_json(string): JSON 数组，每项如 {"opcode":"mine_ore","params":{"resource":"lapis","count":1,"return_home":false}}；最多 8 步。
+            priority(int): 0紧急、10主人、20普通、30自主、40后台。
+            dry_run(bool): 只预览步骤和预算，不加入队列。
+        """
+        try:
+            steps = json.loads(str(steps_json or "[]"))
+        except Exception:
+            return "steps_json 不是有效JSON"
+        if not isinstance(steps, list) or not 1 <= len(steps) <= 8:
+            return "steps_json 必须是 1-8 步的数组"
+        cleaned = []
+        for raw in steps:
+            if not isinstance(raw, dict):
+                return "每个步骤必须是JSON对象"
+            opcode = str(raw.get("opcode") or "").strip()
+            params = raw.get("params") or {}
+            if not isinstance(params, dict):
+                return f"{opcode or '空步骤'} 的 params 必须是对象"
+            if self._agent_skill_spec(opcode) is None:
+                return f"计划步骤不支持：{opcode or '空'}"
+            cleaned.append({
+                "opcode": opcode,
+                "params": params,
+                "continue_on_failure": bool(raw.get("continue_on_failure", False)),
+            })
+        try:
+            seconds, breaks, resources = self._plan_limits(cleaned)
+        except SkillError as exc:
+            return str(exc)
+        if dry_run:
+            return json.dumps({
+                "planned": True, "steps": cleaned, "max_seconds": seconds,
+                "break_budget": breaks, "resources": list(resources),
+            }, ensure_ascii=False)
+        goal = "多步骤计划：" + " → ".join(step["opcode"] for step in cleaned)
+        task_id = self._enqueue_plan(cleaned, priority=max(0, min(40, int(priority))), goal=goal[:160])
+        if not task_id:
+            return "任务队列已满或正在停止，未执行"
+        self._resume_attempts = 0
+        return json.dumps({
+            "accepted": True, "task_id": task_id, "steps": len(cleaned),
+            "note": "计划会按顺序执行，完成或失败后统一通知",
         }, ensure_ascii=False)
 
     @filter.llm_tool(name="mc_task_start")

@@ -108,6 +108,9 @@ def classify_task(text):
     if not body:
         return _none(original, "空文本")
 
+    if "沙" in body and re.search(r"挖|采|collect|mine", body):
+        return _result("gather", {"resource": "sand", "count": _count(body, 32)}, 0.9, "采沙", original)
+
     for name in (
         "煤矿", "煤炭", "煤", "铁矿", "铁", "铜矿", "铜",
         "金矿", "金", "红石矿", "红石", "redstone",

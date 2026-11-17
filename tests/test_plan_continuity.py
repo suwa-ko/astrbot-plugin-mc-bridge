@@ -80,6 +80,53 @@ class PlanContinuityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(m.SkillError):
             await harness.run_plan([])
 
+    async def test_plan_marks_partial_when_step_collects_less(self):
+        harness = PlanHarness()
+
+        async def run_skill(opcode, params):
+            harness.calls.append((str(opcode), dict(params or {})))
+            if opcode == "gather":
+                return {
+                    "skill": "gather", "resource": "sand",
+                    "requested": 12, "collected": 8, "partial": True,
+                }
+            return {"skill": opcode, "ok": True}
+
+        harness.plugin._skills_for = lambda: SimpleNamespace(run=run_skill)
+        item, result = await harness.run_plan([
+            {"opcode": "gather", "params": {"resource": "sand", "count": 12}},
+            {"opcode": "return_home", "params": {}},
+        ])
+        self.assertEqual(result["goal_outcome"], "partial")
+        self.assertEqual(result["partial_steps"], 1)
+        self.assertEqual(result["completed"], 2)
+
+    async def test_enqueue_plan_returns_existing_matching_plan(self):
+        plugin = make_plugin()
+        existing = m.QueuedTask(
+            kind="plan", goal="test", target="plan",
+            params={"steps": [{"opcode": "return_home", "params": {}}]},
+            task_id="plan-existing",
+        )
+        plugin._task_current = existing
+        plugin._task_queue = []
+        plugin._enqueue_tasks = Mock(return_value=False)
+        task_id = plugin._enqueue_plan(
+            [{"opcode": "return_home", "params": {}}], priority=10,
+        )
+        self.assertEqual(task_id, "plan-existing")
+        plugin._enqueue_tasks.assert_not_called()
+
+    async def test_enqueue_plan_reports_full_without_matching_plan(self):
+        plugin = make_plugin()
+        plugin._task_current = None
+        plugin._task_queue = []
+        plugin._enqueue_tasks = Mock(return_value=False)
+        task_id = plugin._enqueue_plan(
+            [{"opcode": "return_home", "params": {}}], priority=10,
+        )
+        self.assertEqual(task_id, "")
+
     async def test_client_reconnect_resumes_remaining_plan_steps(self):
         plugin = make_plugin()
         plugin._interrupted_task = {

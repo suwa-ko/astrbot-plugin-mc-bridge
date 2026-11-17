@@ -45,6 +45,12 @@ class IntentTests(unittest.TestCase):
         gold = intent.classify_task("mc挖两个金矿")
         self.assertEqual(gold["params"]["resource"], "gold")
 
+    def test_gather_sand(self):
+        result = intent.classify_task("mc挖32个沙子")
+        self.assertEqual(result["opcode"], "gather")
+        self.assertEqual(result["params"]["resource"], "sand")
+        self.assertEqual(result["params"]["count"], 32)
+
     def test_craft_iron_pickaxe(self):
         result = intent.classify_task("合成一把铁镐")
         self.assertEqual(result["opcode"], "craft_item")

@@ -163,6 +163,14 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
                 "direction": "to_container",
             })
 
+    def test_validate_params_accepts_craft_table_position(self):
+        skills = skills_mod.VanillaSkills(FakePlugin())
+        _, params = skills.validate_params(
+            "craft_item",
+            {"item": "minecraft:iron_shovel", "count": 1, "table_pos": [-371, 88, -147]},
+        )
+        self.assertEqual(params["table_pos"], [-371, 88, -147])
+
     async def test_transfer_reports_client_move_count(self):
         plugin = FakePlugin()
         plugin.inventory = [{"id": "minecraft:cobblestone", "count": 4, "slot": 20}]
@@ -551,6 +559,14 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         plugin.beds = [{"x": 5, "y": 64, "z": 0, "distance": 1}]
         plugin.bed_context = {"stands": [{"x": 5, "y": 64, "z": 0, "feet_y": 64, "distance": 1}]}
         found = await skills_mod.VanillaSkills(plugin)._gather_scan_fallback("coal", 12)
+        self.assertEqual(found[0]["x"], 5)
+        self.assertEqual(found[0]["approaches"][0]["feet_y"], 64)
+
+    async def test_gather_sand_scan_fallback_uses_sand_and_red_sand(self):
+        plugin = FakePlugin()
+        plugin.beds = [{"x": 5, "y": 64, "z": 0, "distance": 1, "block": "minecraft:red_sand"}]
+        plugin.bed_context = {"stands": [{"x": 5, "y": 64, "z": 1, "feet_y": 64, "distance": 1}]}
+        found = await skills_mod.VanillaSkills(plugin)._gather_scan_fallback("sand", 12)
         self.assertEqual(found[0]["x"], 5)
         self.assertEqual(found[0]["approaches"][0]["feet_y"], 64)
 

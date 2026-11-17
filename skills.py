@@ -80,6 +80,7 @@ RESOURCE_ALIASES = {
     "钻石": "diamond", "钻石矿": "diamond", "diamond": "diamond",
     "绿宝石": "emerald", "绿宝石矿": "emerald", "emerald": "emerald",
     "小麦": "wheat", "麦子": "wheat", "wheat": "wheat",
+    "沙子": "sand", "沙": "sand", "sand": "sand",
 }
 LOG_SUFFIX = "_log"
 STONE_IDS = {"minecraft:stone", "minecraft:cobblestone", "minecraft:deepslate", "minecraft:cobbled_deepslate"}
@@ -168,6 +169,8 @@ def _matches_resource(item_id, resource):
         return item_id in ORE_ITEM_IDS[resource]
     if resource == "wheat":
         return item_id == "minecraft:wheat"
+    if resource == "sand":
+        return item_id in {"minecraft:sand", "minecraft:red_sand"}
     return item_id == resource
 
 
@@ -279,8 +282,8 @@ class VanillaSkills:
                 normalized[parameter.name] = str(value)
         if name == "gather":
             resource = RESOURCE_ALIASES.get(str(normalized.get("resource", "logs")).strip().lower(), str(normalized.get("resource", "logs")).strip().lower())
-            if resource not in {"logs", "stone", "wheat"} and resource not in ORE_QUERIES:
-                raise SkillError("resource 仅支持原木/石头/小麦和各种原矿")
+            if resource not in {"logs", "stone", "wheat", "sand"} and resource not in ORE_QUERIES:
+                raise SkillError("resource 仅支持原木/石头/小麦/沙子/各种原矿")
             normalized["resource"] = resource
             if not 1 <= int(normalized.get("count", 8)) <= 256:
                 raise SkillError("采集数量必须在1-256")
@@ -366,7 +369,7 @@ class VanillaSkills:
         return [row for row in (status.get("inventory_items") or []) if isinstance(row, dict) and int(row.get("slot", 99)) < 36]
 
     def item_count(self, status, item):
-        if item in {"logs", "stone", "wheat"} or item in ORE_ITEM_IDS:
+        if item in {"logs", "stone", "wheat", "sand"} or item in ORE_ITEM_IDS:
             return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if _matches_resource(str(row.get("id", "")), item))
         return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if str(row.get("id", "")) == item)
 
@@ -651,8 +654,10 @@ class VanillaSkills:
 
     # ----------------------------------------------------------------- gather
     async def _gather_scan_fallback(self, resource, radius):
-        """Raw ore scan fallback when the normal exposed-resource scan is empty."""
+        """Raw ore/sand scan fallback when the normal exposed-resource scan is empty."""
         query = ORE_QUERIES.get(resource)
+        if resource == "sand":
+            query = "sand,red_sand"
         if not query:
             return []
         scan = await self._call("scan_blocks", {"radius": radius, "limit": 16, "block": query}, timeout=15)
@@ -685,6 +690,8 @@ class VanillaSkills:
 
     async def _nearest_raw_target(self, resource, radius):
         query = ORE_QUERIES.get(resource)
+        if resource == "sand":
+            query = "sand,red_sand"
         if not query:
             return None
         scan = await self._call("scan_blocks", {"radius": radius, "limit": 16, "block": query}, timeout=15)
@@ -693,8 +700,8 @@ class VanillaSkills:
 
     async def gather(self, resource="logs", count=8, radius=12, max_seconds=180, allow_night=False):
         resource = RESOURCE_ALIASES.get(str(resource).strip().lower(), str(resource).strip().lower())
-        if resource not in {"logs", "stone", "wheat"} and resource not in ORE_QUERIES:
-            raise SkillError("只支持原木、石头、小麦和各种原矿")
+        if resource not in {"logs", "stone", "wheat", "sand"} and resource not in ORE_QUERIES:
+            raise SkillError("只支持原木、石头、小麦、沙子和各种原矿")
         await self._ensure_no_screen()
         target = max(1, min(256, int(count)))
         radius = max(6, min(16, int(radius)))
@@ -963,19 +970,67 @@ class VanillaSkills:
         screen = str(status.get("screen") or "")
         return "Crafting" in screen or "Workbench" in screen
 
-    async def _ensure_table(self):
+    async def _ensure_table(self, table_pos=None):
         if await self._crafting_screen():
             return False
+        candidates = []
+        seen = set()
+
+        def add_candidate(row):
+            if not isinstance(row, dict):
+                return
+            try:
+                key = (int(row.get("x", 0)), int(row.get("y", 0)), int(row.get("z", 0)))
+            except (TypeError, ValueError):
+                return
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append({
+                "x": key[0], "y": key[1], "z": key[2],
+                "distance": _num(row.get("distance"), 999),
+                "stands": row.get("stands") or [],
+            })
+
+        if table_pos is not None:
+            try:
+                tx, ty, tz = _position(table_pos)
+                add_candidate({"x": tx, "y": ty, "z": tz, "distance": 0})
+            except (TypeError, ValueError):
+                pass
         scan = await self._call("scan", {"resource": "logs", "radius": 12}, timeout=15)
         tables = [row for row in (scan.get("workbenches") or []) if isinstance(row, dict)]
-        for table in sorted(tables, key=lambda row: _num(row.get("distance"), 999))[:2]:
+        for table in sorted(tables, key=lambda row: _num(row.get("distance"), 999))[:4]:
+            add_candidate(table)
+        if not tables:
+            data = await self._call(
+                "scan_blocks",
+                {"radius": 16, "limit": 8, "block": "minecraft:crafting_table"},
+                timeout=15,
+            )
+            for row in (data.get("blocks") or []):
+                add_candidate(row)
+
+        for table in candidates:
             stands = [row for row in (table.get("stands") or []) if isinstance(row, dict)]
+            error = None
             if stands:
                 stand = min(stands, key=lambda row: _num(row.get("distance"), 999))
-                error = await self.plugin._approach_target(stand["x"], stand.get("feet_y", stand["y"]), stand["z"], seconds=20, reach=1.5)
-                if error:
-                    continue
-            opened = await self.plugin._call("container", {"operation": "open", "x": table["x"], "y": table["y"], "z": table["z"]}, timeout=10)
+                error = await self.plugin._approach_target(
+                    stand["x"], stand.get("feet_y", stand["y"]), stand["z"],
+                    seconds=20, reach=1.5,
+                )
+            if error or not stands:
+                error = await self.plugin._approach_target(
+                    table["x"], table["y"], table["z"], seconds=20, reach=3.5,
+                )
+            if error:
+                continue
+            opened = await self.plugin._call(
+                "container",
+                {"operation": "open", "x": table["x"], "y": table["y"], "z": table["z"]},
+                timeout=10,
+            )
             if self._err(opened):
                 continue
             await asyncio.sleep(0.4)
@@ -986,7 +1041,10 @@ class VanillaSkills:
             except Exception:
                 pass
         if await self._count("minecraft:crafting_table") < 1:
-            await self.ensure_item("minecraft:crafting_table", 1, depth=1)
+            try:
+                await self.ensure_item("minecraft:crafting_table", 1, depth=1)
+            except SkillError as exc:
+                raise SkillError(f"附近没有可打开的工作台，制作工作台也失败：{exc}") from exc
         scan = await self._call("scan", {"resource": "logs", "radius": 12}, timeout=15)
         placements = [row for row in (scan.get("placements") or []) if isinstance(row, dict)]
         placements = await self._without_player_body(placements)
@@ -1017,7 +1075,7 @@ class VanillaSkills:
             raise SkillError("工作台已放置但没有打开合成界面")
         return True
 
-    async def ensure_item(self, item, need, depth=0):
+    async def ensure_item(self, item, need, depth=0, table_pos=None):
         need = max(0, int(need))
         if need <= 0:
             return 0
@@ -1082,11 +1140,16 @@ class VanillaSkills:
                     break
             if chosen is None:
                 chosen = alternatives[0]
-            await self.ensure_item(str(chosen.get("id") or ""), max(1, int(chosen.get("count", 1) or 1)) * batches, depth + 1)
+            await self.ensure_item(
+                str(chosen.get("id") or ""),
+                max(1, int(chosen.get("count", 1) or 1)) * batches,
+                depth + 1,
+                table_pos=table_pos,
+            )
         width = int(recipe.get("width", 2) or 2)
         height = int(recipe.get("height", 2) or 2)
         if width > 2 or height > 2:
-            await self._ensure_table()
+            await self._ensure_table(table_pos)
         remaining = need - have
         crafted = 0
         while remaining > 0:
@@ -1106,14 +1169,20 @@ class VanillaSkills:
             remaining = need - have - crafted
         return max(await self._count(item), have + crafted)
 
-    async def craft(self, item, count=1):
+    async def craft(self, item, count=1, table_pos=None):
         item = str(item or "").strip()
         if not re.fullmatch(r"(?:[a-z0-9_]+:)?[a-z0-9_][a-z0-9_./-]*", item):
             raise SkillError("物品ID无效")
         item = item if ":" in item else "minecraft:" + item
         target = max(1, min(64, int(count)))
+        if table_pos is not None:
+            try:
+                tx, ty, tz = _position(table_pos)
+            except (TypeError, ValueError) as exc:
+                raise SkillError("工作台坐标无效") from exc
+            table_pos = [int(tx), int(ty), int(tz)]
         before = await self._count(item)
-        ensured = await self.ensure_item(item, before + target, depth=0)
+        ensured = await self.ensure_item(item, before + target, depth=0, table_pos=table_pos)
         after = await self._count(item)
         return {
             "skill": "craft",
@@ -2074,8 +2143,8 @@ class VanillaSkills:
                 result["goal_outcome"] = "partial"
         return result
 
-    async def craft_item(self, item, count=1):
-        result = await self.craft(item, count)
+    async def craft_item(self, item, count=1, table_pos=None):
+        result = await self.craft(item, count, table_pos=table_pos)
         result["skill"] = "craft_item"
         return result
 

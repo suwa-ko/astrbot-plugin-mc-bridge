@@ -81,6 +81,7 @@ RESOURCE_MENTION = {
     "stone": ("石头", "圆石", "石料", "stone"),
     "logs": ("木", "树", "原木", "log", "wood"),
     "wheat": ("小麦", "wheat"),
+    "sand": ("沙", "sand"),
 }
 
 
@@ -960,7 +961,34 @@ class McBridgePlugin(Star):
             }.get(opcode, 64)
         return min(3600, max(30, seconds)), min(4096, max(64, breaks)), tuple(sorted(resources))
 
+    @staticmethod
+    def _plan_steps_key(steps) -> str:
+        try:
+            return json.dumps(steps or [], ensure_ascii=False, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            return str(steps)
+
+    def _find_matching_plan(self, steps):
+        key = self._plan_steps_key(steps)
+        current = getattr(self, "_task_current", None)
+        candidates = []
+        if current is not None:
+            candidates.append(current)
+        candidates.extend(list(getattr(self, "_task_queue", []) or []))
+        for existing in candidates:
+            if existing is None or str(getattr(existing, "kind", "") or "") != "plan":
+                continue
+            existing_steps = (getattr(existing, "params", {}) or {}).get("steps") or []
+            if self._plan_steps_key(existing_steps) == key:
+                task_id = str(getattr(existing, "task_id", "") or "")
+                if task_id:
+                    return task_id
+        return ""
+
     def _enqueue_plan(self, steps, *, priority: int = int(Priority.OWNER), goal: str = "多步骤计划"):
+        existing = self._find_matching_plan(steps)
+        if existing:
+            return existing
         seconds, breaks, resources = self._plan_limits(steps)
         task = QueuedTask(
             kind="plan",
@@ -972,7 +1000,7 @@ class McBridgePlugin(Star):
             budget_seconds=float(seconds),
         )
         if not self._enqueue_tasks([task], priority=int(priority)):
-            return ""
+            return self._find_matching_plan(steps)
         self._remember_task_chain(task.task_id)
         return task.task_id
 
@@ -1009,6 +1037,7 @@ class McBridgePlugin(Star):
             "石头": "stone", "圆石": "stone", "石料": "stone",
             "木头": "logs", "原木": "logs", "树": "logs",
             "小麦": "wheat",
+            "沙子": "sand", "沙": "sand",
         }
         resource = str(resource or "logs").strip().lower()
         resource = aliases.get(resource, resource)
@@ -1934,6 +1963,7 @@ class McBridgePlugin(Star):
             raise SkillError("计划没有步骤")
         results = []
         completed_count = 0
+        partial_count = 0
         failed = 0
         for index, step in enumerate(steps):
             opcode = str(step.get("opcode") or "").strip()
@@ -1956,8 +1986,16 @@ class McBridgePlugin(Star):
                 )
             try:
                 result = await self._execute_task_item(step_item)
-                results.append({"opcode": opcode, "status": "completed", "result": result})
+                step_outcome = classify_goal_outcome(result, step_item.kind)
+                results.append({
+                    "opcode": opcode,
+                    "status": "completed",
+                    "goal_outcome": step_outcome,
+                    "result": result,
+                })
                 completed_count += 1
+                if step_outcome == "partial":
+                    partial_count += 1
                 item.checkpoint = {"plan": {"next": index + 1, "results": results[-4:]}}
             except asyncio.CancelledError:
                 item.checkpoint = {"plan": {"next": index, "results": results[-4:]}}
@@ -1969,11 +2007,15 @@ class McBridgePlugin(Star):
                 item.checkpoint = {"plan": {"next": index + (1 if keep_going else 0), "results": results[-4:]}}
                 if not keep_going:
                     break
-        outcome = "fulfilled" if failed == 0 else ("partial" if completed_count else "unmet")
+        outcome = (
+            "fulfilled" if failed == 0 and partial_count == 0
+            else ("partial" if completed_count else "unmet")
+        )
         summary = {
             "skill": "plan",
             "goal_outcome": outcome,
             "completed": completed_count,
+            "partial_steps": partial_count,
             "total": len(steps),
             "failed": failed,
             "steps": results[-8:],
@@ -4299,7 +4341,7 @@ class McBridgePlugin(Star):
         """采集技能：扫描自然资源，走近、清障、挖掘、拾取并核对库存增量。
 
         Args:
-            resource(string): logs/stone/wheat 或煤/铁/铜/金/红石/青金石/钻石/绿宝石等原矿及对应中文。
+            resource(string): logs/stone/wheat/sand 或煤/铁/铜/金/红石/青金石/钻石/绿宝石等原矿及对应中文。
             count(int): 目标新增数量1-256。
             radius(int): 搜索半径6-16。
             max_seconds(int): 总时限20-600秒。
@@ -4319,6 +4361,7 @@ class McBridgePlugin(Star):
             "石头": "stone", "圆石": "stone", "石料": "stone",
             "木头": "logs", "原木": "logs", "树": "logs",
             "小麦": "wheat",
+            "沙子": "sand", "沙": "sand",
         }
         resource = aliases.get(str(resource or "logs").strip().lower(), str(resource or "logs").strip().lower())
         error = await self._gather_guard(event, resource)
@@ -5890,7 +5933,7 @@ class McBridgePlugin(Star):
         """把多步骤任务一次提交为顺序计划；每步失败默认停止，可标记继续。
 
         Args:
-            steps_json(string): JSON 数组，每项如 {"opcode":"mine_ore","params":{"resource":"lapis","count":1,"return_home":false}}；最多 8 步。
+            steps_json(string): JSON 数组，每项如 {"opcode":"mine_ore","params":{"resource":"lapis","count":1,"return_home":false}}；最多 8 步。craft_item 可选 table_pos=[x,y,z] 指定工作台；gather 支持 sand。
             priority(int): 0紧急、10主人、20普通、30自主、40后台。
             dry_run(bool): 只预览步骤和预算，不加入队列。
         """

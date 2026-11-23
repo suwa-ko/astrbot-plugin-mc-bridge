@@ -3,7 +3,7 @@ import importlib
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from test_base import m
 
@@ -156,6 +156,13 @@ class SurvivalTests(unittest.IsolatedAsyncioTestCase):
         supervisor.last_food_resupply = time.monotonic()
         await supervisor.evaluate(status(food=6, inventory_items=[]))
         plugin._queue_skill.assert_not_called()
+
+    async def test_food_resupply_triggers_on_fresh_monotonic_clock(self):
+        plugin = FakePlugin()
+        with patch.object(survival_mod.time, "monotonic", return_value=1.0):
+            supervisor = survival_mod.SurvivalSupervisor(plugin)
+            await supervisor.evaluate(status(food=6, inventory_items=[]))
+        plugin._queue_skill.assert_called_once()
 
     async def test_food_resupply_skips_with_owner_task(self):
         plugin = FakePlugin()

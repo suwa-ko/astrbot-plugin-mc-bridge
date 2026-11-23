@@ -90,7 +90,7 @@ class SurvivalSupervisor:
         self.retreat_until = 0.0
         self.last_notice = 0.0
         self.last_notice_key = ""
-        self.last_food_resupply = 0.0
+        self.last_food_resupply = None
         self.stats = {
             "events": 0,
             "polls": 0,
@@ -213,7 +213,7 @@ class SurvivalSupervisor:
             return False
         if self._task_busy():
             return False
-        if time.monotonic() - self.last_food_resupply < self._food_resupply_cooldown():
+        if self.last_food_resupply is not None and time.monotonic() - self.last_food_resupply < self._food_resupply_cooldown():
             return False
         if status.get("sleeping") or status.get("using_item") or status.get("survival_busy"):
             return False
@@ -459,7 +459,7 @@ class SurvivalSupervisor:
         return True
 
     def _should_eat(self, health: float, max_health: float, food: float) -> bool:
-        if time.monotonic() - self.last_eat < _num(self._cfg("auto_eat_cooldown_seconds", 15), 15.0):
+        if self.last_eat and time.monotonic() - self.last_eat < _num(self._cfg("auto_eat_cooldown_seconds", 15), 15.0):
             return False
         if food <= self._eat_food():
             return True
@@ -582,7 +582,7 @@ class SurvivalSupervisor:
         cooldown = max(5.0, _num(self._cfg("auto_survive_cooldown_seconds", 30), 30.0))
         if key == self.last_notice_key and now - self.last_notice < cooldown:
             return
-        if now - self.last_notice < 5.0:
+        if self.last_notice and now - self.last_notice < 5.0:
             return
         route = None
         getter = getattr(self.plugin, "_survival_notice_route", None)

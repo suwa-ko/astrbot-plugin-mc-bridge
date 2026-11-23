@@ -1920,8 +1920,11 @@ class VanillaSkills:
             "skill": "farm",
             "operation": operation,
             "crop": crop,
+            "requested": target,
             "harvested": sum(harvested.values()),
             "planted": sum(planted.values()),
+            "collected": sum(harvested.values()) if operation in {"harvest", "both"} else sum(planted.values()),
+            "partial": (sum(harvested.values()) if operation in {"harvest", "both"} else sum(planted.values())) < target,
             "crops": {"harvested": harvested, "planted": planted},
         }
 
@@ -2052,12 +2055,16 @@ class VanillaSkills:
     async def _farm_plant_cells(self, cells, crop, count):
         chosen = self._crop_name(crop or "auto")
         planted = {}
+        skipped = 0
+        reasons = []
         target = max(1, min(256, int(count)))
         for cell in cells:
             if sum(planted.values()) >= target:
                 break
             state = await self._farm_cell_state(cell)
             if not state.get("empty"):
+                skipped += 1
+                reasons.append("格子已被占用")
                 continue
             if chosen == "auto":
                 crop_name = None
@@ -2068,13 +2075,20 @@ class VanillaSkills:
             else:
                 crop_name = chosen
             if not crop_name:
+                skipped += 1
+                reasons.append("没有可用种子")
                 break
             x, y, z = int(cell["x"]), int(cell["y"]), int(cell["z"])
             if not await self._approach_farm_cell(x, y, z):
+                skipped += 1
+                reasons.append("无法接近格子")
                 continue
             if await self._plant_crop(x, y, z, CROP_SPECS[crop_name]["seed"]):
                 planted[crop_name] = planted.get(crop_name, 0) + 1
-        return planted
+            else:
+                skipped += 1
+                reasons.append("种植未确认")
+        return planted, skipped, reasons
 
     async def _farm_discover(self, radius=12, plot_hint=""):
         status = await self.status()
@@ -2436,9 +2450,15 @@ class VanillaSkills:
                 if not target_cells:
                     target_cells = scanned_cells
             harvested, planted = await self._farm_harvest_cells(target_cells, count, replant=replant)
+            harvested_total = sum(harvested.values())
+            requested = max(1, min(256, int(count)))
             return {
                 "skill": "farm_plot", "operation": "harvest",
-                "harvested": sum(harvested.values()), "planted": sum(planted.values()),
+                "requested": requested,
+                "harvested": harvested_total,
+                "collected": harvested_total,
+                "partial": harvested_total < requested,
+                "planted": sum(planted.values()),
                 "crops": {"harvested": harvested, "planted": planted},
             }
         if operation == "plant":
@@ -2456,10 +2476,18 @@ class VanillaSkills:
                         target_cells.extend(row.get("cells") or [])
                 if not target_cells:
                     target_cells = scanned_cells
-            planted = await self._farm_plant_cells(target_cells, chosen, count)
+            planted, skipped, reasons = await self._farm_plant_cells(target_cells, chosen, count)
+            planted_total = sum(planted.values())
+            requested = max(1, min(256, int(count)))
             return {
                 "skill": "farm_plot", "operation": "plant",
-                "planted": sum(planted.values()), "crops": planted,
+                "requested": requested,
+                "planted": planted_total,
+                "collected": planted_total,
+                "partial": planted_total < requested,
+                "skipped": skipped,
+                "reasons": reasons[:8],
+                "crops": planted,
             }
         raise SkillError("未知田块操作")
 
@@ -3841,6 +3869,8 @@ class VanillaSkills:
         radius = max(4, min(32, int(radius)))
         deadline = time.monotonic() + max(10, min(300, int(max_seconds)))
         wanted_type = "" if target == "auto" else f"minecraft:{target}"
+        max_approach = min(28.0, float(radius))
+        failed_targets = set()
         selector = getattr(self.plugin, "_select_best_weapon", None)
         if callable(selector):
             try:
@@ -3876,6 +3906,10 @@ class VanillaSkills:
                     continue
                 if wanted_type and row_type != wanted_type:
                     continue
+                if _num(row.get("distance"), 999) > max_approach:
+                    continue
+                if str(row.get("uuid") or "") in failed_targets:
+                    continue
                 candidates.append(row)
             if not candidates:
                 if not errors:
@@ -3888,10 +3922,18 @@ class VanillaSkills:
                 x, y, z = int(row["x"]), int(row["y"]), int(row["z"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if _num(row.get("distance"), 99) > 2.8:
-                error = await self.plugin._approach_target(x, y, z, seconds=10, reach=2.2)
+            if _num(row.get("distance"), 99) > 12:
+                try:
+                    await self.return_to([x, y, z], reach=3.0)
+                except SkillError as exc:
+                    errors.append(f"接近猎物失败：{exc}")
+                    failed_targets.add(str(row.get("uuid") or ""))
+                continue
+            if _num(row.get("distance"), 99) > 3.3:
+                error = await self.plugin._approach_target(x, y, z, seconds=20, reach=2.2)
                 if error:
                     errors.append(f"接近猎物失败：{error}")
+                    failed_targets.add(str(row.get("uuid") or ""))
                     continue
             try:
                 result = await self._call(
@@ -3899,10 +3941,14 @@ class VanillaSkills:
                 )
             except SkillError as exc:
                 errors.append(f"攻击猎物失败：{exc}")
+                failed_targets.add(str(row.get("uuid") or ""))
                 await asyncio.sleep(0.3)
                 continue
             if result.get("dead"):
                 hunted += 1
+                await asyncio.sleep(0.5)
+                await self._pickup_near(x, y, z, raw_item)
+                await asyncio.sleep(0.3)
                 await self._pickup_near(x, y, z, raw_item)
                 collected[raw_item] = self.item_count(await self.status(), raw_item)
                 self._mark("hunt", "hunting", hunted, requested, {"raw": dict(collected)})
@@ -3932,7 +3978,16 @@ class VanillaSkills:
             for raw_item in HUNTABLE.values()
             if self.item_count(await self.status(), raw_item) > 0
         }
-        outcome = "fulfilled" if hunted >= requested else ("partial" if hunted > 0 else "unmet")
+        raw_total = sum(collected.values())
+        cooked_total = sum(cooked.values())
+        if hunted > 0 and raw_total == 0 and cooked_total == 0:
+            errors.append("没有拾取到肉类掉落")
+        if hunted >= requested and (raw_total + cooked_total) > 0:
+            outcome = "partial" if cook and cooked_total == 0 else "fulfilled"
+        elif hunted > 0 or (raw_total + cooked_total) > 0:
+            outcome = "partial"
+        else:
+            outcome = "unmet"
         return {
             "skill": "hunt",
             "target": target,

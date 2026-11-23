@@ -137,9 +137,45 @@ class FarmPlotSkillTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(result["harvested"], 3)
             self.assertEqual(result["planted"], 3)
+            self.assertTrue(result["partial"])
+            self.assertEqual(result["requested"], 10)
             plant_items = [params.get("item") for action, params in plugin.runs if action == "plant"]
             self.assertIn("minecraft:potato", plant_items)
             self.assertIn("minecraft:wheat_seeds", plant_items)
+
+    async def test_plant_reports_skipped_and_partial(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plugin = self._plugin(folder)
+            memory = plugin._farm_memory_for()
+            memory.upsert({
+                "id": "farm-1",
+                "cells": [
+                    {"x": 0, "y": 63, "z": 0, "crop": "empty"},
+                    {"x": 1, "y": 63, "z": 0, "crop": "wheat"},
+                ],
+            })
+            plugin.inventory = [{"id": "minecraft:wheat_seeds", "count": 8, "slot": 0}]
+
+            async def inspect(action, params=None, timeout=10):
+                if action == "inspect_block":
+                    if int(params.get("x", 0)) == 1:
+                        return {"block": "minecraft:wheat", "state": "Block{minecraft:wheat}[age=3]"}
+                    return {"air": True}
+                return await FakePlugin._call(plugin, action, params, timeout)
+
+            async def run(action, params, seconds=10):
+                plugin.runs.append((action, dict(params)))
+                return {"phase": "completed", "success": True}
+
+            plugin._call = inspect
+            plugin._run_operation = run
+            result = await skills_mod.VanillaSkills(plugin).farm_plot(
+                "plant", plot="farm-1", crop="wheat", count=2,
+            )
+            self.assertEqual(result["planted"], 1)
+            self.assertEqual(result["skipped"], 1)
+            self.assertTrue(result["partial"])
+            self.assertTrue(result["reasons"])
 
     async def test_create_mask_supports_irregular_shape(self):
         with tempfile.TemporaryDirectory() as folder:

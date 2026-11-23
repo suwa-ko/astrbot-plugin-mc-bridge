@@ -35,7 +35,7 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["raw"].get("minecraft:beef"), 2)
         self.assertTrue(result["returned"])
         skills.smelt.assert_awaited()
-        self.assertEqual(result["goal_outcome"], "fulfilled")
+        self.assertEqual(result["goal_outcome"], "partial")
 
     async def test_hunt_skips_baby_and_tamed_animals(self):
         plugin = FakePlugin()
@@ -66,6 +66,70 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["hunted"], 0)
         self.assertEqual(result["goal_outcome"], "unmet")
         self.assertTrue(result["errors"])
+
+    async def test_hunt_without_drop_is_partial(self):
+        plugin = FakePlugin()
+
+        async def call(action, params=None, timeout=10):
+            if action == "scan_entities":
+                return {"entities": [{
+                    "uuid": "cow-1", "type": "minecraft:cow", "x": 1, "y": 64, "z": 0,
+                    "distance": 2.0, "baby": False, "tamed": False,
+                }]}
+            if action == "hunt":
+                return {"target": "Cow", "type": "minecraft:cow", "dead": True, "health": 0}
+            return await FakePlugin._call(plugin, action, params, timeout)
+
+        plugin._call = call
+        skills = skills_mod.VanillaSkills(plugin)
+        skills.return_home = AsyncMock(return_value={"arrived": True})
+        result = await skills.hunt("cow", count=1, radius=16, max_seconds=20, cook=False)
+        self.assertEqual(result["hunted"], 1)
+        self.assertEqual(result["goal_outcome"], "partial")
+        self.assertTrue(any("没有拾取到肉" in error for error in result["errors"]))
+
+    async def test_hunt_uses_return_to_for_far_targets(self):
+        plugin = FakePlugin()
+        scans = [
+            {"entities": [{"uuid": "pig-1", "type": "minecraft:pig", "x": 20, "y": 64, "z": 0,
+                           "distance": 20.0, "baby": False, "tamed": False}]},
+            {"entities": [{"uuid": "pig-1", "type": "minecraft:pig", "x": 1, "y": 64, "z": 0,
+                           "distance": 2.0, "baby": False, "tamed": False}]},
+        ]
+
+        async def call(action, params=None, timeout=10):
+            if action == "scan_entities":
+                return scans.pop(0) if scans else {"entities": []}
+            if action == "hunt":
+                return {"target": "Pig", "type": "minecraft:pig", "dead": True, "health": 0}
+            return await FakePlugin._call(plugin, action, params, timeout)
+
+        plugin._call = call
+        skills = skills_mod.VanillaSkills(plugin)
+        skills.return_to = AsyncMock(return_value={"arrived": True})
+        skills.return_home = AsyncMock(return_value={"arrived": True})
+        result = await skills.hunt("pig", count=1, radius=32, max_seconds=30)
+        skills.return_to.assert_awaited()
+        self.assertEqual(result["hunted"], 1)
+
+    async def test_hunt_skips_targets_beyond_safe_navigation(self):
+        plugin = FakePlugin()
+
+        async def call(action, params=None, timeout=10):
+            if action == "scan_entities":
+                return {"entities": [{
+                    "uuid": "far-cow", "type": "minecraft:cow", "x": 40, "y": 64, "z": 0,
+                    "distance": 34.3, "baby": False, "tamed": False,
+                }]}
+            return await FakePlugin._call(plugin, action, params, timeout)
+
+        plugin._call = call
+        skills = skills_mod.VanillaSkills(plugin)
+        skills.return_home = AsyncMock(return_value={"arrived": True})
+        result = await skills.hunt("cow", count=1, radius=32, max_seconds=10)
+        self.assertEqual(result["hunted"], 0)
+        self.assertEqual(result["goal_outcome"], "unmet")
+        self.assertFalse(any("safe navigation" in error for error in result["errors"]))
 
 
 if __name__ == "__main__":

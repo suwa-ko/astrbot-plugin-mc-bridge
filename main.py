@@ -59,6 +59,7 @@ from .task_checkpoint import baseline_from_status, clean_checkpoint, resume_plan
 from .break_policy import BreakPolicy
 from .short_history import ShortHistoryStore
 from .poi_memory import PoiMemory
+from .farm_memory import FarmMemory
 from .memory_store import MemoryStore
 from .privacy import redact_text
 from .survival import SurvivalSupervisor
@@ -1430,6 +1431,13 @@ class McBridgePlugin(Star):
             self._poi_memory = memory
         return memory
 
+    def _farm_memory_for(self) -> FarmMemory:
+        memory = getattr(self, "_farm_memory", None)
+        if memory is None:
+            memory = FarmMemory(Path(StarTools.get_data_dir(PLUGIN_NAME)) / "farm_plots.json")
+            self._farm_memory = memory
+        return memory
+
     def _memory_store_for(self) -> MemoryStore:
         store = getattr(self, "_memory_store", None)
         if store is None:
@@ -2526,7 +2534,7 @@ class McBridgePlugin(Star):
             return {"__error__": "请求已停止或被新的控制操作中断"}
         if action in {"inventory", "equip", "craft", "workbench", "scan", "mine_block", "sleep", "operation", "navigate"} and self.bridge.client_info.get("protocol", 1) < 3:
             return {"__error__": "此动作需要0.3.0 Mod / 协议3，请重新启动更新后的客户端"}
-        if action in {'knowledge','sense','station','smelt','interact','pickup','move_item','trade','ride','dismount','wake','plant','dig_down','block_context','get_menu','interact_block','release_use','mine_below','align','unequip_armor','till','jump','use_bonemeal'} and action not in str(self.bridge.client_info.get('capabilities','')).split(','):
+        if action in {'knowledge','sense','station','smelt','interact','pickup','move_item','trade','ride','dismount','wake','plant','dig_down','block_context','get_menu','interact_block','release_use','mine_below','align','unequip_armor','till','jump','use_bonemeal','hunt'} and action not in str(self.bridge.client_info.get('capabilities','')).split(','):
             return {'__error__':'此功能需要0.4.0或更新的客户端 Mod，请安装新版后重连'}
         if not readonly and self.bridge.connected and self.bridge.client_info.get("protocol", 1) < 2:
             return {"__error__": "客户端协议过旧，请安装 0.2.0 Mod 后重新进入游戏"}
@@ -2640,7 +2648,7 @@ class McBridgePlugin(Star):
             "mc_goto 支持 place_ref 导航；mc_protect 管理保护区域；mc_screenshot 只在确实需要看画面时使用。"
             "多步骤任务优先用 mc_plan 一次提交 steps 数组，按顺序执行，完成或失败后统一通知；只在需要单独控制某一步时用 mc_task_start。mc_task_start 的 opcode 支持 mine_ore(resource,count,return_home)（煤/铁/铜/金/红石/青金石/钻石/绿宝石，深层矿会自动向下挖）、gather(resource,count)、craft(item,count)、smelt(item,count)、"
             "container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、"
-            "farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、"
+            "farm(operation,count,radius,replant)、farm_plot(operation,plot,radius,count,crop,cells,mask,origin,replant,dry_run)（支持不规则格子集合）、sleep(source,remember)、combat(target,max_seconds,retreat_health)、hunt(target,count,radius,max_seconds,return_home,cook)、"
             "explore(goal,max_seconds,max_distance)、return_to(target_pos)、return_home(reach)、tunnel_to(target_pos,max_distance,reach)、resupply(...)、trade_for(item,count,radius)；"
             "params_json 传 JSON 对象，不确定时先用 dry_run=true 预览。"
             "mc_task_status 查看进度、mc_task_cancel 取消任务。"
@@ -4506,27 +4514,99 @@ class McBridgePlugin(Star):
 
     @filter.llm_tool(name="mc_farm")
     @require_mc_tool("mc_farm")
-    async def mc_farm(self, event: AstrMessageEvent, operation: str = "harvest", radius: int = 8, count: int = 8, replant: bool = True):
-        """农业技能：收割成熟小麦并拾取，或给空农田补种小麦。
+    async def mc_farm(self, event: AstrMessageEvent, operation: str = "harvest", radius: int = 8, count: int = 8, replant: bool = True, crop: str = "auto"):
+        """农业技能：收割成熟作物并补种，或给空农田补种。
 
         Args:
             operation(string): harvest、plant 或 both。
             radius(int): 搜索半径2-12。
             count(int): 最多处理数量1-32。
             replant(bool): 收割后是否补种，默认是。
+            crop(string): auto/wheat/carrots/potatoes/beetroots。
         """
         operation = str(operation or "harvest").strip().lower()
         if operation not in {"harvest", "plant", "both"}:
             return "operation 只能是 harvest/plant/both"
+        crop = str(crop or "auto").strip().lower()
+        if crop not in {"auto", "wheat", "carrots", "potatoes", "beetroots"}:
+            return "crop 只能是 auto/wheat/carrots/potatoes/beetroots"
         if self._queue_skill(
-            f"农业{operation} x{int(count)}",
+            f"农业{operation} {crop} x{int(count)}",
             "farm",
             operation=operation,
             radius=max(2, min(12, int(radius))),
             count=max(1, min(32, int(count))),
             replant=bool(replant),
+            crop=crop,
         ):
             return "已加入农业技能队列，完成后会通知收割/补种数量"
+        return "任务队列已满或正在停止，未执行"
+
+    @filter.llm_tool(name="mc_farm_plot")
+    @require_mc_tool("mc_farm_plot")
+    async def mc_farm_plot(
+        self,
+        event: AstrMessageEvent,
+        operation: str = "status",
+        plot: str = "",
+        radius: int = 12,
+        count: int = 32,
+        crop: str = "auto",
+        cells_json: str = "",
+        mask: str = "",
+        origin_json: str = "",
+        replant: bool = True,
+        dry_run: bool = False,
+    ):
+        """不规则田块：发现/记录/收割/补种/开垦，按格子集合而不是矩形处理。
+
+        Args:
+            operation(string): discover/status/harvest/plant/create/list/forget。
+            plot(string): 可选田块 ID；留空表示发现全部或使用记忆里的田块。
+            radius(int): 搜索半径2-16。
+            count(int): 最多处理数量1-256。
+            crop(string): auto/wheat/carrots/potatoes/beetroots。
+            cells_json(string): create 用的格子 JSON，如 [[x,y,z], ...] 或 [{"x":..,"y":..,"z":..,"crop":"potatoes"}]。
+            mask(string): create 用的不规则形状，如 "##./##~/.##"；# 作物，~ 水，. 跳过；行间用 / 或换行。
+            origin_json(string): mask 的原点 [x,y,z]（y 是耕地层）；留空用当前位置。
+            replant(bool): 收割后是否补种。
+            dry_run(bool): create 只预览，不翻地/种植。
+        """
+        operation = str(operation or "status").strip().lower()
+        if operation not in {"discover", "status", "harvest", "plant", "create", "list", "forget"}:
+            return "operation 只能是 discover/status/harvest/plant/create/list/forget"
+        crop = str(crop or "auto").strip().lower()
+        if crop not in {"auto", "wheat", "carrots", "potatoes", "beetroots"}:
+            return "crop 只能是 auto/wheat/carrots/potatoes/beetroots"
+        cells = None
+        if str(cells_json or "").strip():
+            try:
+                cells = json.loads(cells_json)
+            except Exception:
+                return "cells_json 不是有效 JSON"
+            if not isinstance(cells, list):
+                return "cells_json 必须是数组"
+        origin = None
+        if str(origin_json or "").strip():
+            try:
+                origin = json.loads(origin_json)
+            except Exception:
+                return "origin_json 不是有效 JSON"
+        if self._queue_skill(
+            f"田块{operation}",
+            "farm_plot",
+            operation=operation,
+            plot=str(plot or "").strip(),
+            radius=max(2, min(16, int(radius))),
+            count=max(1, min(256, int(count))),
+            crop=crop,
+            cells=cells,
+            mask=str(mask or ""),
+            origin=origin,
+            replant=bool(replant),
+            dry_run=bool(dry_run),
+        ):
+            return "已加入田块任务，完成后会返回田块数量、成熟/空地统计和实际操作结果"
         return "任务队列已满或正在停止，未执行"
 
     @filter.llm_tool(name="mc_resupply")
@@ -4543,7 +4623,7 @@ class McBridgePlugin(Star):
         """补给技能：按目标补齐安全食物、火把、圆石和基础工具，材料不足时返回缺口。
 
         Args:
-            food(int): 目标安全食物数量0-64。
+            food(int): 目标安全食物份数0-64（约5点/份，优先从食物箱、现有农田和烹饪获取）。
             torches(int): 目标火把数量0-64。
             blocks(int): 目标圆石数量0-256。
             tools(bool): 是否补齐铁镐/铁斧/铁剑；无铁材料时返回缺口，不降级木器。
@@ -4616,6 +4696,39 @@ class McBridgePlugin(Star):
             retreat_health=max(1, min(20, int(retreat_health))),
         ):
             return "已加入战斗技能队列，完成后会通知击杀/撤离结果"
+        return "任务队列已满或正在停止，未执行"
+
+    @filter.llm_tool(name="mc_hunt")
+    @require_mc_tool("mc_hunt")
+    async def mc_hunt(self, event: AstrMessageEvent, target: str = "auto", count: int = 2,
+                      radius: int = 24, max_seconds: int = 180, return_home: bool = True,
+                      cook: bool = True):
+        """打猎技能：猎取牛/猪/羊/鸡/兔，拾取生肉，可回家后用熔炉烤熟。
+
+        Args:
+            target(string): auto/cow/pig/sheep/chicken/rabbit。
+            count(int): 目标猎物数量1-8。
+            radius(int): 搜索半径4-32。
+            max_seconds(int): 最长打猎时间10-300秒。
+            return_home(bool): 打猎后是否回家，默认是。
+            cook(bool): 回家后是否把生肉烤熟，默认是。
+        """
+        target = str(target or "auto").strip().lower()
+        if target not in {"auto", "cow", "pig", "sheep", "chicken", "rabbit"}:
+            return "target 只能是 auto/cow/pig/sheep/chicken/rabbit"
+        if not 1 <= int(count) <= 8:
+            return "打猎数量必须在1-8"
+        if self._queue_skill(
+            f"打猎{target} x{int(count)}",
+            "hunt",
+            target=target,
+            count=max(1, min(8, int(count))),
+            radius=max(4, min(32, int(radius))),
+            max_seconds=max(10, min(300, int(max_seconds))),
+            return_home=bool(return_home),
+            cook=bool(cook),
+        ):
+            return "已加入打猎技能队列，完成后会返回猎物、生肉和熟肉数量"
         return "任务队列已满或正在停止，未执行"
 
     @filter.llm_tool(name="mc_sleep")
@@ -5991,7 +6104,7 @@ class McBridgePlugin(Star):
         """启动一个 L1/L2 技能任务，返回 task_id；参数用 JSON 对象传入。
 
         Args:
-            opcode(string): mine_ore(resource,count,return_home)（煤/铁/铜/金/红石/青金石/钻石/绿宝石，深层矿自动下挖）、gather(resource,count)、craft(item,count)、smelt(item,count)、container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、farm(operation,count,radius,replant)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、explore(goal,max_seconds,max_distance)、return_to(target_pos)、return_home(reach)、tunnel_to(target_pos,max_distance,reach)、resupply(...)、trade_for(item,count,radius)；auto 表示按文本分类；resume 表示恢复检查点任务。
+            opcode(string): mine_ore(resource,count,return_home)（煤/铁/铜/金/红石/青金石/钻石/绿宝石，深层矿自动下挖）、gather(resource,count)、craft(item,count)、smelt(item,count)、container_transfer(items 或 item,count,direction,x,y,z)、build(pattern,material,x,y,z,length,width,height,direction)、farm(operation,count,radius,replant)、farm_plot(operation,plot,radius,count,crop,cells,mask,origin,replant,dry_run)、hunt(target,count,radius,max_seconds,return_home,cook)、sleep(source,remember)、combat(target,max_seconds,retreat_health)、explore(goal,max_seconds,max_distance)、return_to(target_pos)、return_home(reach)、tunnel_to(target_pos,max_distance,reach)、resupply(...)、trade_for(item,count,radius)；auto 表示按文本分类；resume 表示恢复检查点任务。
             params_json(string): 技能参数JSON；auto 模式用 {"text":"砍8个木头"}。
             priority(int): 0紧急、10主人、20普通、30自主、40后台。
             dry_run(bool): 只校验并返回资源/时限预览，不加入队列。

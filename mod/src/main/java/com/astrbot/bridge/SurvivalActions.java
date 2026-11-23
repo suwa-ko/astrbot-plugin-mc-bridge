@@ -33,6 +33,9 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.AgeableMob;
+import net.minecraft.world.entity.TamableAnimal;
+import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Inventory;
@@ -1140,7 +1143,7 @@ final class SurvivalActions {
 
     private JsonObject scanBlocks(LocalPlayer player,JsonObject p) {
         int radius=Math.max(1,Math.min(16,integer(p,"radius",8)));
-        int limit=Math.max(1,Math.min(32,integer(p,"limit",16)));
+        int limit=Math.max(1,Math.min(128,integer(p,"limit",16)));
         boolean includeAir=p.has("include_air")&&p.get("include_air").getAsBoolean();
         String filter=text(p,"block","").trim();
         Set<String> filters=new HashSet<>();
@@ -1202,6 +1205,9 @@ final class SurvivalActions {
             row.addProperty("name",entity.getName().getString());
             row.addProperty("distance",entity.distanceTo(player));
             row.addProperty("hostile",entity instanceof Enemy&&SurvivalRules.hostileType(typeId,BridgeConfig.NON_HOSTILE_ENTITIES.get()));
+            if(entity instanceof Animal) row.addProperty("passive",true);
+            if(entity instanceof AgeableMob ageable) row.addProperty("baby",ageable.isBaby());
+            if(entity instanceof TamableAnimal tamable) row.addProperty("tamed",tamable.isTame());
             if(entity instanceof LivingEntity living){row.addProperty("health",living.getHealth());row.addProperty("max_health",living.getMaxHealth());}
             if(entity instanceof ItemEntity drop){row.add("item",stackInfo(drop.getItem()));row.addProperty("item_count",drop.getItem().getCount());}
             out.add(row);

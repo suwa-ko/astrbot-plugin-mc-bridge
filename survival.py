@@ -90,6 +90,7 @@ class SurvivalSupervisor:
         self.retreat_until = 0.0
         self.last_notice = 0.0
         self.last_notice_key = ""
+        self.last_food_resupply = 0.0
         self.stats = {
             "events": 0,
             "polls": 0,
@@ -98,6 +99,7 @@ class SurvivalSupervisor:
             "flees": 0,
             "notices": 0,
             "errors": 0,
+            "food_resupply": 0,
         }
 
     # ------------------------------------------------------------- lifecycle
@@ -168,6 +170,81 @@ class SurvivalSupervisor:
             return float(max(5, base * 2))
         return float(base)
 
+    def _food_resupply_enabled(self) -> bool:
+        return _bool(self._cfg("auto_food_resupply", True), True)
+
+    def _food_resupply_min_food(self) -> float:
+        return float(_int(self._cfg("auto_food_resupply_min_food", 8), 8, 0, 20))
+
+    def _food_resupply_food(self) -> int:
+        return _int(self._cfg("auto_food_resupply_food", 8), 8, 1, 64)
+
+    def _food_resupply_cooldown(self) -> float:
+        return max(60.0, _num(self._cfg("auto_food_resupply_cooldown_seconds", 1800), 1800.0))
+
+    @staticmethod
+    def _food_points(status: dict[str, Any]) -> int | None:
+        rows = status.get("inventory_items")
+        if not isinstance(rows, list):
+            return None
+        total = 0
+        for row in rows:
+            if not isinstance(row, dict) or row.get("safe_food") is not True:
+                continue
+            try:
+                count = int(row.get("count", 0) or 0)
+                nutrition = int(row.get("nutrition", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if nutrition <= 0:
+                nutrition = 1
+            total += max(0, count) * nutrition
+        return total
+
+    def _should_food_resupply(self, status: dict[str, Any], food: float,
+                              points: int | None) -> bool:
+        if points is None or points > 5:
+            return False
+        if food > self._food_resupply_min_food():
+            return False
+        if not self._food_resupply_enabled():
+            return False
+        if self.mode not in {"defend", "full"}:
+            return False
+        if self._task_busy():
+            return False
+        if time.monotonic() - self.last_food_resupply < self._food_resupply_cooldown():
+            return False
+        if status.get("sleeping") or status.get("using_item") or status.get("survival_busy"):
+            return False
+        return True
+
+    async def _request_food_resupply(self) -> bool:
+        queue = getattr(self.plugin, "_queue_skill", None)
+        if not callable(queue):
+            return False
+        target = self._food_resupply_food()
+        accepted = bool(queue(
+            "自动补给食物",
+            "resupply",
+            food=target,
+            torches=0,
+            blocks=0,
+            tools=False,
+            max_seconds=600,
+        ))
+        self.last_food_resupply = time.monotonic()
+        if not accepted:
+            return False
+        self.stats["food_resupply"] += 1
+        await self._notify(
+            "食物不足",
+            f"已自动去补给 {target} 份食物",
+            "等待补给结果",
+            key="food_resupply",
+        )
+        return True
+
     # ---------------------------------------------------------------- loop
 
     async def _loop(self) -> None:
@@ -207,6 +284,7 @@ class SurvivalSupervisor:
             health = _num(status.get("health"), 20.0)
             max_health = _num(status.get("max_health"), 20.0)
             food = _num(status.get("food"), 20.0)
+            points = self._food_points(status)
             dead = bool(status.get("dead")) or health <= 0
             if dead or status.get("sleeping") or status.get("using_item") or status.get("survival_busy"):
                 return
@@ -242,8 +320,10 @@ class SurvivalSupervisor:
             if nearest is None:
                 self.engaged = False
                 self.anchor = None
-                if self._should_eat(health, max_health, food):
+                if (points is None or points > 0) and self._should_eat(health, max_health, food):
                     await self._eat(status)
+                elif self._should_food_resupply(status, food, points):
+                    await self._request_food_resupply()
                 else:
                     self.last_notice_key = ""
                 return

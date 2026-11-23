@@ -1,4 +1,5 @@
 import importlib
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -19,6 +20,7 @@ class FakePlugin:
         self.scan_extra = {}
         self.beds = []
         self.bed_context = {}
+        self.inspect_extra = {}
         self.sleeping = False
         self.screen = "none"
 
@@ -49,6 +51,9 @@ class FakePlugin:
             return result
         if action == "scan_blocks":
             return {"blocks": [dict(row) for row in self.beds]}
+        if action == "inspect_block":
+            key = (int(params.get("x", 0)), int(params.get("y", 0)), int(params.get("z", 0)))
+            return dict(self.inspect_extra.get(key, {}))
         if action == "block_context":
             return dict(self.bed_context)
         if action == "scan_entities":
@@ -751,6 +756,87 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         result = await skills_mod.VanillaSkills(FakePlugin()).resupply(food=0, torches=0, blocks=0, tools=False, max_seconds=30)
         self.assertTrue(result["complete"])
         self.assertEqual(result["shortages"], [])
+
+    async def test_food_points_uses_nutrition_and_fallback(self):
+        plugin = FakePlugin()
+        plugin.inventory = [
+            {"id": "minecraft:bread", "count": 2, "slot": 0, "safe_food": True, "nutrition": 5},
+            {"id": "minecraft:cooked_beef", "count": 1, "slot": 1, "safe_food": True, "nutrition": 8},
+            {"id": "minecraft:carrot", "count": 3, "slot": 2, "safe_food": True},
+            {"id": "minecraft:stick", "count": 9, "slot": 3},
+        ]
+        skills = skills_mod.VanillaSkills(plugin)
+        status = await skills.status()
+        self.assertEqual(skills.food_points(status), 27)
+        self.assertEqual(skills.food_count(status), 6)
+
+    async def test_farm_harvests_potatoes_and_replants_correct_seed(self):
+        plugin = FakePlugin()
+        plugin.beds = [{"x": 5, "y": 64, "z": 0, "block": "minecraft:potatoes", "distance": 1}]
+        plugin.inspect_extra[(5, 64, 0)] = {"state": "Block{minecraft:potatoes}[age=7]"}
+
+        async def run(action, params, seconds=10):
+            plugin.runs.append((action, dict(params)))
+            if action == "mine_at":
+                plugin.inventory.append({"id": "minecraft:potato", "count": 3, "slot": 20})
+            return {"phase": "completed", "success": True}
+
+        plugin._run_operation = run
+        result = await skills_mod.VanillaSkills(plugin).farm(
+            "harvest", crop="potatoes", count=1, replant=True, radius=6,
+        )
+        self.assertEqual(result["harvested"], 1)
+        self.assertEqual(result["planted"], 1)
+        plant = [params for action, params in plugin.runs if action == "plant"][0]
+        self.assertEqual(plant["item"], "minecraft:potato")
+        self.assertEqual(plant["y"], 63)
+
+    async def test_farm_plants_carrots_when_only_carrot_seed_available(self):
+        plugin = FakePlugin()
+        plugin.beds = [{"x": 5, "y": 64, "z": 0, "block": "minecraft:farmland", "distance": 1}]
+        plugin.inspect_extra[(5, 65, 0)] = {"air": True}
+        plugin.inventory = [{"id": "minecraft:carrot", "count": 2, "slot": 0}]
+
+        async def run(action, params, seconds=10):
+            plugin.runs.append((action, dict(params)))
+            return {"phase": "completed", "success": True}
+
+        plugin._run_operation = run
+        result = await skills_mod.VanillaSkills(plugin).farm(
+            "plant", count=1, replant=True, radius=6,
+        )
+        self.assertEqual(result["planted"], 1)
+        plant = [params for action, params in plugin.runs if action == "plant"][0]
+        self.assertEqual(plant["item"], "minecraft:carrot")
+
+    async def test_withdraw_food_takes_from_container_and_keeps_reserve(self):
+        plugin = FakePlugin()
+        plugin.beds = [{"x": 7, "y": 64, "z": 0, "block": "minecraft:chest", "distance": 2}]
+        skills = skills_mod.VanillaSkills(plugin)
+        skills.open_and_read = AsyncMock(return_value={
+            "slots": [{"id": "minecraft:bread", "count": 3, "safe_food": True, "nutrition": 5, "slot": 0}],
+        })
+        skills.transfer_many = AsyncMock(return_value={
+            "moved": 1, "items": [{"item": "minecraft:bread", "moved": 1}],
+        })
+        result = await skills._withdraw_food(10, time.monotonic() + 10)
+        self.assertEqual(result["withdrawn"], 10)
+        moves = skills.transfer_many.await_args.args[0]
+        self.assertEqual(moves, [{"item": "minecraft:bread", "count": 2}])
+
+    async def test_ensure_food_reports_container_action(self):
+        plugin = FakePlugin()
+        plugin.beds = [{"x": 7, "y": 64, "z": 0, "block": "minecraft:chest", "distance": 2}]
+        skills = skills_mod.VanillaSkills(plugin)
+        skills.open_and_read = AsyncMock(return_value={
+            "slots": [{"id": "minecraft:bread", "count": 3, "safe_food": True, "nutrition": 5, "slot": 0}],
+        })
+        skills.transfer_many = AsyncMock(return_value={
+            "moved": 1, "items": [{"item": "minecraft:bread", "moved": 1}],
+        })
+        result = await skills.ensure_food(10, max_seconds=30, harvest=False, cook=False, trade=False)
+        self.assertIn("container_food", result["actions"])
+        self.assertFalse(result["complete"])
 
     def test_tool_rank_requires_iron_or_better(self):
         self.assertGreaterEqual(skills_mod.tool_rank("minecraft:iron_pickaxe"), 3)

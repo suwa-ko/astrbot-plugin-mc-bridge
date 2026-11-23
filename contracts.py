@@ -137,6 +137,8 @@ class L2Opcode(str, Enum):
     FIND_AND_SLEEP = "find_and_sleep"
     RETURN_HOME = "return_home"
     TUNNEL_TO = "tunnel_to"
+    FARM_PLOT = "farm_plot"
+    HUNT = "hunt"
 
 
 # Kept explicit so the boundary is reviewable and testable.
@@ -172,6 +174,8 @@ L2_ONLY = frozenset({
     "find_and_sleep",
     "return_home",
     "tunnel_to",
+    "farm_plot",
+    "hunt",
 })
 
 KERNEL_ONLY = frozenset({
@@ -316,6 +320,8 @@ L2_SPECS: dict[L2Opcode, L2Spec] = {
     L2Opcode.FIND_AND_SLEEP: L2Spec(L2Opcode.FIND_AND_SLEEP, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 60),
     L2Opcode.RETURN_HOME: L2Spec(L2Opcode.RETURN_HOME, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 1200),
     L2Opcode.TUNNEL_TO: L2Spec(L2Opcode.TUNNEL_TO, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 600),
+    L2Opcode.FARM_PLOT: L2Spec(L2Opcode.FARM_PLOT, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.INVENTORY}), 600),
+    L2Opcode.HUNT: L2Spec(L2Opcode.HUNT, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.INVENTORY}), 300),
 }
 
 L1_OPCODE_NAMES = frozenset(opcode.value for opcode in L1Opcode)

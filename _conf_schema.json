@@ -235,6 +235,30 @@
     "type": "int",
     "default": 15
   },
+  "auto_food_resupply": {
+    "description": "食物耗尽时自动去收食物/补给",
+    "type": "bool",
+    "default": true,
+    "hint": "仅在 defend/full 模式、无主人任务、无敌人时触发；需要已有农田、食物箱或可交易村民。"
+  },
+  "auto_food_resupply_food": {
+    "description": "自动食物补给的目标份数",
+    "type": "int",
+    "default": 8,
+    "hint": "1 份约 5 点饱食度；会优先从食物箱、现有作物和烹饪获取。"
+  },
+  "auto_food_resupply_min_food": {
+    "description": "自动食物补给的饱食度触发线",
+    "type": "int",
+    "default": 8,
+    "hint": "饱食度低于该值且几乎没有可吃食物时触发。"
+  },
+  "auto_food_resupply_cooldown_seconds": {
+    "description": "自动食物补给冷却（秒）",
+    "type": "int",
+    "default": 1800,
+    "hint": "失败后至少等待这么久再重试，避免反复跑。"
+  },
   "screenshot_keep_count": {
     "description": "截图最多保留张数",
     "type": "int",

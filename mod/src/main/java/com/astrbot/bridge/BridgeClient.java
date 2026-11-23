@@ -17,6 +17,8 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.entity.TamableAnimal;
+import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 
@@ -35,6 +37,9 @@ import java.util.concurrent.TimeUnit;
 /** WebSocket client living on the Minecraft client thread. */
 public final class BridgeClient {
     private static final BridgeClient INSTANCE = new BridgeClient();
+    private static final java.util.Set<String> HUNTABLE = java.util.Set.of(
+            "minecraft:cow", "minecraft:pig", "minecraft:sheep",
+            "minecraft:chicken", "minecraft:rabbit");
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -233,7 +238,7 @@ public final class BridgeClient {
             hello.addProperty("version", "0.8.0");
             hello.addProperty("local_collect_resources","logs,stone,coal,iron,wheat");
             hello.addProperty("protocol", 3);
-            hello.addProperty("capabilities", "inventory,equip,unequip_armor,craft,workbench,scan,mine_block,sleep,navigate,operation,knowledge,sense,station,smelt,interact,pickup,fresh_capture,background_render,look_angles,station_recovery,manual_craft,normal_respawn,normal_auto_respawn,path_feedback,collision_navigation,move_item,trade,ride,dismount,wake,plant,till,jump,dig_down,block_context,get_menu,interact_block,release_use,mine_below,align,use_bonemeal,ladder_assist,navigation_break_budget,survival_events");
+            hello.addProperty("capabilities", "inventory,equip,unequip_armor,craft,workbench,scan,mine_block,sleep,navigate,operation,knowledge,sense,station,smelt,interact,pickup,fresh_capture,background_render,look_angles,station_recovery,manual_craft,normal_respawn,normal_auto_respawn,path_feedback,collision_navigation,move_item,trade,ride,dismount,wake,plant,till,jump,dig_down,block_context,get_menu,interact_block,release_use,mine_below,align,use_bonemeal,ladder_assist,navigation_break_budget,survival_events,hunt");
             Minecraft mc = Minecraft.getInstance();
             hello.addProperty(
                     "player",
@@ -335,6 +340,7 @@ public final class BridgeClient {
                 }
                 case "come" -> come(id, player, optString(params, "player", ""));
                 case "attack" -> attack(id, player, optString(params, "target", ""));
+                case "hunt" -> hunt(id, player, params);
                 case "eat" -> eat(id, player);
                 case "screenshot" -> screenshot(id);
                 case "knowledge" -> sendResult(id,true,null,GameKnowledge.query(player,params));
@@ -529,6 +535,53 @@ public final class BridgeClient {
             data.addProperty("health", target.getHealth());
             data.addProperty("distance", target.distanceTo(player));
             data.addProperty("dead", target.isDeadOrDying());
+            data.addProperty("phase", "attempted");
+            sendResult(id, true, null, data);
+        }));
+    }
+
+    private void hunt(String id, LocalPlayer player, JsonObject params) {
+        String uuid = optString(params, "uuid", "").trim();
+        String type = optString(params, "type", "").trim().toLowerCase();
+        List<Entity> candidates = new ArrayList<>(
+                player.level().getEntities(
+                        player,
+                        player.getBoundingBox().inflate(6.0),
+                        e -> {
+                            if (!(e instanceof Animal animal) || !animal.isAlive() || animal.isBaby()) return false;
+                            if (animal instanceof TamableAnimal tame && tame.isTame()) return false;
+                            String key = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
+                            if (!HUNTABLE.contains(key)) return false;
+                            if (!uuid.isEmpty()) return e.getUUID().toString().equals(uuid);
+                            return type.isEmpty() || key.contains(type);
+                        }));
+        candidates.sort(Comparator.comparingDouble(e -> e.distanceToSqr(player)));
+        if (candidates.isEmpty()) {
+            sendResult(id, false, "附近没有可猎取的被动动物", null);
+            return;
+        }
+        LivingEntity target = (LivingEntity) candidates.get(0);
+        if (target.distanceTo(player) > 3.5F || !player.hasLineOfSight(target)) {
+            sendResult(id, false, "目标不在攻击距离或没有视线", null);
+            return;
+        }
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.gameMode == null) {
+            sendResult(id, false, "game mode unavailable", null);
+            return;
+        }
+        player.lookAt(EntityAnchorArgument.Anchor.EYES, target.getEyePosition());
+        mc.gameMode.attack(player, target);
+        player.swing(InteractionHand.MAIN_HAND);
+        WebSocket origin = socket;
+        CompletableFuture.delayedExecutor(250, TimeUnit.MILLISECONDS).execute(() -> mc.execute(() -> {
+            if (socket != origin) return;
+            JsonObject data = new JsonObject();
+            data.addProperty("target", target.getName().getString());
+            data.addProperty("type", BuiltInRegistries.ENTITY_TYPE.getKey(target.getType()).toString());
+            data.addProperty("health", target.isAlive() ? target.getHealth() : 0);
+            data.addProperty("distance", target.distanceTo(player));
+            data.addProperty("dead", !target.isAlive());
             data.addProperty("phase", "attempted");
             sendResult(id, true, null, data);
         }));

@@ -1,8 +1,9 @@
 import asyncio
 import importlib
+import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from test_base import m
 
@@ -33,6 +34,10 @@ class FakePlugin:
             "auto_survive_notify": True,
             "auto_survive_cooldown_seconds": 30,
             "auto_eat_cooldown_seconds": 15,
+            "auto_food_resupply": True,
+            "auto_food_resupply_food": 8,
+            "auto_food_resupply_min_food": 8,
+            "auto_food_resupply_cooldown_seconds": 1800,
         }
         self.config.update(config or {})
         self.bridge = SimpleNamespace(connected=True, session_id="session", client_info={"capabilities": "survival_events"})
@@ -40,6 +45,7 @@ class FakePlugin:
         self._task_current = None
         self._active_task = None
         self._closing = False
+        self._queue_skill = Mock(return_value=True)
         self._auto_flee = AsyncMock(return_value="已确认到达撤离落脚点")
         self._stop_task_runtime = AsyncMock(return_value=None)
         self.notices = []
@@ -132,6 +138,41 @@ class SurvivalTests(unittest.IsolatedAsyncioTestCase):
         plugin.skills.eat_until_full.assert_awaited_once()
         plugin.skills.combat.assert_not_awaited()
         self.assertTrue(any("自动进食" in text for text, _ in plugin.notices))
+
+    async def test_food_resupply_queued_when_no_food(self):
+        plugin = FakePlugin()
+        supervisor = survival_mod.SurvivalSupervisor(plugin)
+        await supervisor.evaluate(status(food=6, inventory_items=[]))
+        plugin._queue_skill.assert_called_once()
+        args, kwargs = plugin._queue_skill.call_args
+        self.assertEqual(args[1], "resupply")
+        self.assertEqual(kwargs["food"], 8)
+        self.assertEqual(supervisor.stats["food_resupply"], 1)
+        self.assertTrue(any("补给" in text for text, _ in plugin.notices))
+
+    async def test_food_resupply_respects_cooldown(self):
+        plugin = FakePlugin()
+        supervisor = survival_mod.SurvivalSupervisor(plugin)
+        supervisor.last_food_resupply = time.monotonic()
+        await supervisor.evaluate(status(food=6, inventory_items=[]))
+        plugin._queue_skill.assert_not_called()
+
+    async def test_food_resupply_skips_with_owner_task(self):
+        plugin = FakePlugin()
+        plugin._task_current = object()
+        supervisor = survival_mod.SurvivalSupervisor(plugin)
+        await supervisor.evaluate(status(food=6, inventory_items=[]))
+        plugin._queue_skill.assert_not_called()
+
+    async def test_food_resupply_skips_when_food_is_available(self):
+        plugin = FakePlugin()
+        supervisor = survival_mod.SurvivalSupervisor(plugin)
+        await supervisor.evaluate(status(
+            food=6,
+            inventory_items=[{"id": "minecraft:bread", "count": 2, "safe_food": True, "nutrition": 5}],
+        ))
+        plugin._queue_skill.assert_not_called()
+        plugin.skills.eat_until_full.assert_awaited_once()
 
     async def test_eat_failure_notifies(self):
         plugin = FakePlugin()

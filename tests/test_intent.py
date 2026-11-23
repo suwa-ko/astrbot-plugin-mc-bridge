@@ -51,6 +51,15 @@ class IntentTests(unittest.TestCase):
         self.assertEqual(result["params"]["resource"], "sand")
         self.assertEqual(result["params"]["count"], 32)
 
+    def test_hunt_and_farm_plot(self):
+        hunt = intent.classify_task("mc打猎2头牛")
+        self.assertEqual(hunt["opcode"], "hunt")
+        self.assertEqual(hunt["params"]["target"], "cow")
+        self.assertEqual(hunt["params"]["count"], 2)
+        farm = intent.classify_task("去菜地收菜")
+        self.assertEqual(farm["opcode"], "farm_plot")
+        self.assertEqual(farm["params"]["operation"], "harvest")
+
     def test_craft_iron_pickaxe(self):
         result = intent.classify_task("合成一把铁镐")
         self.assertEqual(result["opcode"], "craft_item")

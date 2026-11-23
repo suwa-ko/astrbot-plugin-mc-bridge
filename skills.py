@@ -15,6 +15,7 @@ import re
 import time
 
 from .core import ActionError
+from .farm_memory import MAX_CELLS
 
 
 class SkillError(ActionError):
@@ -114,6 +115,70 @@ DEEP_ORE_LAYERS = {
     "diamond": -54,
     "emerald": 32,
 }
+CROP_SPECS = {
+    "wheat": {
+        "block": "minecraft:wheat",
+        "seed": "minecraft:wheat_seeds",
+        "item": "minecraft:wheat",
+        "age": 7,
+    },
+    "carrots": {
+        "block": "minecraft:carrots",
+        "seed": "minecraft:carrot",
+        "item": "minecraft:carrot",
+        "age": 7,
+    },
+    "potatoes": {
+        "block": "minecraft:potatoes",
+        "seed": "minecraft:potato",
+        "item": "minecraft:potato",
+        "age": 7,
+    },
+    "beetroots": {
+        "block": "minecraft:beetroots",
+        "seed": "minecraft:beetroot_seeds",
+        "item": "minecraft:beetroot",
+        "age": 3,
+    },
+}
+CROP_BLOCKS = {spec["block"]: name for name, spec in CROP_SPECS.items()}
+FOOD_NUTRITION = {
+    "minecraft:bread": 5,
+    "minecraft:baked_potato": 5,
+    "minecraft:cooked_beef": 8,
+    "minecraft:cooked_porkchop": 8,
+    "minecraft:cooked_chicken": 6,
+    "minecraft:cooked_mutton": 6,
+    "minecraft:cooked_rabbit": 5,
+    "minecraft:cooked_cod": 5,
+    "minecraft:cooked_salmon": 6,
+    "minecraft:carrot": 3,
+    "minecraft:potato": 1,
+    "minecraft:beetroot": 1,
+    "minecraft:apple": 4,
+    "minecraft:golden_carrot": 6,
+    "minecraft:melon_slice": 2,
+    "minecraft:sweet_berries": 2,
+    "minecraft:pumpkin_pie": 8,
+    "minecraft:cookie": 2,
+}
+RAW_FOOD_COOKING = {
+    "minecraft:beef": "minecraft:cooked_beef",
+    "minecraft:porkchop": "minecraft:cooked_porkchop",
+    "minecraft:chicken": "minecraft:cooked_chicken",
+    "minecraft:mutton": "minecraft:cooked_mutton",
+    "minecraft:rabbit": "minecraft:cooked_rabbit",
+    "minecraft:potato": "minecraft:baked_potato",
+    "minecraft:cod": "minecraft:cooked_cod",
+    "minecraft:salmon": "minecraft:cooked_salmon",
+}
+HUNTABLE = {
+    "minecraft:cow": "minecraft:beef",
+    "minecraft:pig": "minecraft:porkchop",
+    "minecraft:sheep": "minecraft:mutton",
+    "minecraft:chicken": "minecraft:chicken",
+    "minecraft:rabbit": "minecraft:rabbit",
+}
 DIGGABLE_GROUND = {
     "dirt", "grass_block", "podzol", "coarse_dirt", "rooted_dirt", "mud", "clay",
     "sand", "gravel", "stone", "cobblestone", "deepslate", "cobbled_deepslate",
@@ -197,10 +262,12 @@ class VanillaSkills:
             "transfer": self.transfer,
             "build": self.build,
             "farm": self.farm,
+            "farm_plot": self.farm_plot,
             "sleep": self.sleep,
             "resupply": self.resupply,
             "explore": self.explore,
             "combat": self.combat,
+            "hunt": self.hunt,
             "trade_for": self.trade_for,
             # L1 fixed combinations
             "sleep_at": self.sleep_at,
@@ -323,6 +390,42 @@ class VanillaSkills:
                 raise SkillError("物品ID无效")
             if not 1 <= int(normalized.get("count", 1)) <= 64:
                 raise SkillError("合成数量必须在1-64")
+        if name == "farm":
+            operation = str(normalized.get("operation", "harvest")).strip().lower()
+            if operation not in {"harvest", "plant", "both"}:
+                raise SkillError("operation 只能是 harvest/plant/both")
+            crop = str(normalized.get("crop", "auto")).strip().lower()
+            if crop not in {"auto", "wheat", "carrots", "potatoes", "beetroots"}:
+                raise SkillError("crop 只能是 auto/wheat/carrots/potatoes/beetroots")
+            normalized["operation"] = operation
+            normalized["crop"] = crop
+        if name == "farm_plot":
+            operation = str(normalized.get("operation", "status")).strip().lower()
+            if operation not in {"discover", "status", "harvest", "plant", "create", "list", "forget"}:
+                raise SkillError("operation 只能是 discover/status/harvest/plant/create/list/forget")
+            crop = str(normalized.get("crop", "auto")).strip().lower()
+            if crop not in {"auto", "wheat", "carrots", "potatoes", "beetroots"}:
+                raise SkillError("crop 只能是 auto/wheat/carrots/potatoes/beetroots")
+            if not 2 <= int(normalized.get("radius", 12)) <= 16:
+                raise SkillError("田块搜索半径必须在2-16")
+            if not 1 <= int(normalized.get("count", 32)) <= 256:
+                raise SkillError("田块处理数量必须在1-256")
+            cells = normalized.get("cells")
+            if cells is not None and not isinstance(cells, list):
+                raise SkillError("cells 必须是数组")
+            normalized["operation"] = operation
+            normalized["crop"] = crop
+        if name == "hunt":
+            target = str(normalized.get("target", "auto")).strip().lower()
+            if target not in {"auto", "cow", "pig", "sheep", "chicken", "rabbit"}:
+                raise SkillError("target 只能是 auto/cow/pig/sheep/chicken/rabbit")
+            if not 1 <= int(normalized.get("count", 2)) <= 8:
+                raise SkillError("打猎数量必须在1-8")
+            if not 4 <= int(normalized.get("radius", 24)) <= 32:
+                raise SkillError("打猎搜索半径必须在4-32")
+            if not 10 <= int(normalized.get("max_seconds", 180)) <= 300:
+                raise SkillError("打猎时限必须在10-300秒")
+            normalized["target"] = target
         if name == "build":
             if str(normalized.get("pattern", "line")).strip().lower() not in {"line", "wall", "floor", "pillar", "box"}:
                 raise SkillError("pattern 只能是 line/wall/floor/pillar/box")
@@ -372,6 +475,33 @@ class VanillaSkills:
         if item in {"logs", "stone", "wheat", "sand"} or item in ORE_ITEM_IDS:
             return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if _matches_resource(str(row.get("id", "")), item))
         return sum(int(row.get("count", 0)) for row in self.inventory_items(status) if str(row.get("id", "")) == item)
+
+    @staticmethod
+    def _food_rows(status):
+        rows = []
+        for row in VanillaSkills.inventory_items(status):
+            if row.get("safe_food") is not True:
+                continue
+            item_id = str(row.get("id", ""))
+            try:
+                count = int(row.get("count", 0) or 0)
+            except (TypeError, ValueError):
+                count = 0
+            try:
+                nutrition = int(row.get("nutrition", 0) or 0)
+            except (TypeError, ValueError):
+                nutrition = 0
+            if nutrition <= 0:
+                nutrition = int(FOOD_NUTRITION.get(item_id, 1) or 1)
+            if count > 0:
+                rows.append({"id": item_id, "count": count, "nutrition": nutrition})
+        return rows
+
+    def food_points(self, status):
+        return sum(row["count"] * row["nutrition"] for row in self._food_rows(status))
+
+    def food_count(self, status):
+        return sum(row["count"] for row in self._food_rows(status))
 
     async def _pickup_near(self, x, y, z, resource, radius=5):
         for attempt in range(3):
@@ -1659,60 +1789,686 @@ class VanillaSkills:
                 "placed": placed, "errors": errors}
 
     # -------------------------------------------------------------------- farm
-    async def farm(self, operation="harvest", radius=8, count=8, replant=True):
+    @staticmethod
+    def _crop_name(value):
+        value = str(value or "").strip().lower()
+        aliases = {
+            "carrot": "carrots", "potato": "potatoes", "beetroot": "beetroots",
+            "carrots": "carrots", "potatoes": "potatoes", "beetroots": "beetroots",
+            "wheat": "wheat",
+        }
+        return aliases.get(value, value)
+
+    @staticmethod
+    def _block_id(value):
+        value = str(value or "").strip()
+        return value if ":" in value else ("minecraft:" + value if value else "")
+
+    @staticmethod
+    def _crop_age(state):
+        match = re.search(r"age=(\d+)", str(state or ""))
+        try:
+            return int(match.group(1)) if match else None
+        except (TypeError, ValueError):
+            return None
+
+    async def _plant_crop(self, x, y, z, seed):
+        if not seed or await self._count(seed) <= 0:
+            return False
+        try:
+            await self._run("plant", {"x": int(x), "y": int(y), "z": int(z), "item": seed}, seconds=6)
+            return True
+        except Exception:
+            return False
+
+    async def farm(self, operation="harvest", radius=8, count=8, replant=True, crop="auto"):
         operation = str(operation or "harvest").strip().lower()
         if operation not in {"harvest", "plant", "both"}:
             raise SkillError("operation 只能是 harvest/plant/both")
+        crop = self._crop_name(crop or "auto")
+        if crop not in set(CROP_SPECS) | {"auto"}:
+            raise SkillError("crop 只能是 auto/wheat/carrots/potatoes/beetroots")
         radius = max(2, min(12, int(radius)))
         target = max(1, min(32, int(count)))
-        harvested = planted = 0
+        harvested = {}
+        planted = {}
         total_work = target * (2 if operation == "both" else 1)
-        self._mark("farm", "farming", 0, total_work, {"operation": operation, "harvested": 0, "planted": 0})
+        self._mark("farm", "farming", 0, total_work, {"operation": operation, "crop": crop})
+
         if operation in {"harvest", "both"}:
-            data = await self._call("scan_blocks", {"radius": radius, "limit": 32, "block": "minecraft:wheat"}, timeout=10)
+            query = CROP_SPECS[crop]["block"] if crop != "auto" else ",".join(
+                spec["block"] for spec in CROP_SPECS.values()
+            )
+            data = await self._call("scan_blocks", {"radius": radius, "limit": 64, "block": query}, timeout=10)
             crops = [row for row in (data.get("blocks") or []) if isinstance(row, dict)]
             for row in crops:
-                if harvested >= target:
+                if sum(harvested.values()) >= target:
                     break
-                inspect = await self._call("inspect_block", {"x": row["x"], "y": row["y"], "z": row["z"]}, timeout=10)
-                if "age=7" not in str(inspect.get("state") or ""):
+                block = self._block_id(row.get("block"))
+                crop_name = CROP_BLOCKS.get(block)
+                if not crop_name or (crop != "auto" and crop_name != crop):
                     continue
+                spec = CROP_SPECS[crop_name]
                 try:
-                    await self._run("mine_at", {"x": row["x"], "y": row["y"], "z": row["z"]}, seconds=10)
-                    harvested += 1
-                    await self._pickup_near(row["x"], row["y"], row["z"], "wheat")
-                    if replant and await self._count("minecraft:wheat_seeds") > 0:
-                        try:
-                            await self._run("plant", {"x": row["x"], "y": int(row["y"]) - 1, "z": row["z"]}, seconds=6)
-                            planted += 1
-                        except Exception:
-                            pass
-                    self._mark("farm", "farming", harvested + planted, total_work,
-                               {"operation": operation, "harvested": harvested, "planted": planted})
+                    inspect = await self._call(
+                        "inspect_block",
+                        {"x": int(row["x"]), "y": int(row["y"]), "z": int(row["z"])},
+                        timeout=10,
+                    )
                 except Exception:
                     continue
-        if operation in {"plant", "both"} and planted == 0:
-            data = await self._call("scan_blocks", {"radius": radius, "limit": 32, "block": "minecraft:farmland"}, timeout=10)
-            farms = [row for row in (data.get("blocks") or []) if isinstance(row, dict)]
-            for row in farms:
-                if planted >= target:
-                    break
-                if await self._count("minecraft:wheat_seeds") <= 0:
-                    break
+                age = self._crop_age(inspect.get("state"))
+                if age is None or age < int(spec["age"]):
+                    continue
                 try:
-                    await self._run("plant", {"x": row["x"], "y": row["y"], "z": row["z"]}, seconds=6)
-                    planted += 1
-                    self._mark("farm", "farming", harvested + planted, total_work,
-                               {"operation": operation, "harvested": harvested, "planted": planted})
+                    await self._run("mine_at", {"x": int(row["x"]), "y": int(row["y"]), "z": int(row["z"])}, seconds=10)
+                    await self._pickup_near(int(row["x"]), int(row["y"]), int(row["z"]), spec["item"])
+                    harvested[crop_name] = harvested.get(crop_name, 0) + 1
+                    if replant:
+                        used = await self._plant_crop(
+                            int(row["x"]), int(row["y"]) - 1, int(row["z"]), spec["seed"],
+                        )
+                        if used:
+                            planted[crop_name] = planted.get(crop_name, 0) + 1
+                    self._mark(
+                        "farm", "farming", sum(harvested.values()) + sum(planted.values()),
+                        total_work, {"operation": operation, "crop": crop,
+                                     "harvested": dict(harvested), "planted": dict(planted)},
+                    )
                 except Exception:
                     continue
-        return {"skill": "farm", "operation": operation, "harvested": harvested, "planted": planted}
 
-    # ------------------------------------------------------------------- sleep
+        if operation in {"plant", "both"} and sum(planted.values()) < target:
+            data = await self._call("scan_blocks", {"radius": radius, "limit": 64, "block": "minecraft:farmland"}, timeout=10)
+            farms = [row for row in (data.get("blocks") or []) if isinstance(row, dict)]
+            planted_cells = set()
+            for row in farms:
+                if sum(planted.values()) >= target:
+                    break
+                try:
+                    x, y, z = int(row["x"]), int(row["y"]), int(row["z"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if (x, y, z) in planted_cells:
+                    continue
+                try:
+                    above = await self._call("inspect_block", {"x": x, "y": y + 1, "z": z}, timeout=10)
+                except Exception:
+                    continue
+                if not (above.get("air") or above.get("replaceable")):
+                    continue
+                if crop == "auto":
+                    crop_name = None
+                    for candidate in ("wheat", "carrots", "potatoes", "beetroots"):
+                        if await self._count(CROP_SPECS[candidate]["seed"]) > 0:
+                            crop_name = candidate
+                            break
+                else:
+                    crop_name = crop
+                if not crop_name:
+                    break
+                used = await self._plant_crop(x, y, z, CROP_SPECS[crop_name]["seed"])
+                if used:
+                    planted_cells.add((x, y, z))
+                    planted[crop_name] = planted.get(crop_name, 0) + 1
+                    self._mark(
+                        "farm", "farming", sum(harvested.values()) + sum(planted.values()),
+                        total_work, {"operation": operation, "crop": crop,
+                                     "harvested": dict(harvested), "planted": dict(planted)},
+                    )
+        return {
+            "skill": "farm",
+            "operation": operation,
+            "crop": crop,
+            "harvested": sum(harvested.values()),
+            "planted": sum(planted.values()),
+            "crops": {"harvested": harvested, "planted": planted},
+        }
+
+    # ---------------------------------------------------------------- farm plot
+    def _farm_memory(self):
+        getter = getattr(self.plugin, "_farm_memory_for", None)
+        return getter() if callable(getter) else None
+
+    @staticmethod
+    def _farm_shape(cells):
+        if not cells:
+            return "empty"
+        xs = [int(cell["x"]) for cell in cells]
+        zs = [int(cell["z"]) for cell in cells]
+        area = (max(xs) - min(xs) + 1) * (max(zs) - min(zs) + 1)
+        return "irregular" if len(cells) < area else "rectangle"
+
+    @staticmethod
+    def _group_farm_cells(cells):
+        remaining = {(int(cell["x"]), int(cell["y"]), int(cell["z"])) for cell in cells}
+        groups = []
+        while remaining:
+            seed = remaining.pop()
+            group = [seed]
+            queue = [seed]
+            while queue and len(group) < MAX_CELLS:
+                x, y, z = queue.pop()
+                for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    key = (x + dx, y, z + dz)
+                    if key in remaining:
+                        remaining.remove(key)
+                        group.append(key)
+                        queue.append(key)
+            groups.append(group)
+        return groups
+
+    @staticmethod
+    def _farm_water_near(cells, water_rows):
+        if not cells:
+            return []
+        xs = [int(cell["x"]) for cell in cells]
+        zs = [int(cell["z"]) for cell in cells]
+        ys = [int(cell["y"]) for cell in cells]
+        min_x, max_x = min(xs) - 4, max(xs) + 4
+        min_z, max_z = min(zs) - 4, max(zs) + 4
+        min_y, max_y = min(ys) - 1, max(ys) + 1
+        found = []
+        for row in water_rows:
+            try:
+                x, y, z = int(row["x"]), int(row["y"]), int(row["z"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if min_x <= x <= max_x and min_z <= z <= max_z and min_y <= y <= max_y:
+                found.append({"x": x, "y": y, "z": z})
+            if len(found) >= 64:
+                break
+        return found
+
+    async def _approach_farm_cell(self, x, y, z):
+        try:
+            context = await self._call("block_context", {"x": int(x), "y": int(y), "z": int(z)}, timeout=8)
+        except Exception:
+            return False
+        if _num(context.get("distance"), 0) <= 4.0:
+            return True
+        stands = [row for row in (context.get("stands") or []) if isinstance(row, dict)]
+        if stands:
+            stand = min(stands, key=lambda row: _num(row.get("distance"), 999))
+            error = await self.plugin._approach_target(
+                stand["x"], stand.get("feet_y", stand["y"]), stand["z"],
+                seconds=10, reach=1.5,
+            )
+        else:
+            error = await self.plugin._approach_target(int(x), int(y), int(z), seconds=10, reach=2.5)
+        return not error
+
+    async def _farm_cell_state(self, cell):
+        try:
+            above = await self._call(
+                "inspect_block",
+                {"x": int(cell["x"]), "y": int(cell["y"]) + 1, "z": int(cell["z"])},
+                timeout=10,
+            )
+        except Exception:
+            return {"empty": False, "crop": "", "age": None, "mature": False}
+        block = self._block_id(above.get("block"))
+        if not block:
+            match = re.search(r"Block\{([^}\[]+)", str(above.get("state") or ""))
+            if match:
+                block = self._block_id(match.group(1))
+        crop = CROP_BLOCKS.get(block)
+        if not crop:
+            return {"empty": bool(above.get("air") or above.get("replaceable")), "crop": "", "age": None, "mature": False}
+        age = self._crop_age(above.get("state"))
+        mature = age is not None and age >= int(CROP_SPECS[crop]["age"])
+        return {"empty": False, "crop": crop, "age": age, "mature": mature}
+
+    async def _farm_harvest_cells(self, cells, count, replant=True):
+        harvested = {}
+        planted = {}
+        target = max(1, min(256, int(count)))
+        for cell in cells:
+            if sum(harvested.values()) >= target:
+                break
+            state = await self._farm_cell_state(cell)
+            crop = state.get("crop")
+            if not crop or not state.get("mature"):
+                continue
+            x, y, z = int(cell["x"]), int(cell["y"]), int(cell["z"])
+            if not await self._approach_farm_cell(x, y + 1, z):
+                continue
+            spec = CROP_SPECS[crop]
+            try:
+                await self._run("mine_at", {"x": x, "y": y + 1, "z": z}, seconds=10)
+                await self._pickup_near(x, y + 1, z, spec["item"])
+                harvested[crop] = harvested.get(crop, 0) + 1
+                if replant and await self._plant_crop(x, y, z, spec["seed"]):
+                    planted[crop] = planted.get(crop, 0) + 1
+                self._mark(
+                    "farm_plot", "harvesting",
+                    sum(harvested.values()) + sum(planted.values()),
+                    target * 2, {"harvested": dict(harvested), "planted": dict(planted)},
+                )
+            except Exception:
+                continue
+        return harvested, planted
+
+    async def _farm_plant_cells(self, cells, crop, count):
+        chosen = self._crop_name(crop or "auto")
+        planted = {}
+        target = max(1, min(256, int(count)))
+        for cell in cells:
+            if sum(planted.values()) >= target:
+                break
+            state = await self._farm_cell_state(cell)
+            if not state.get("empty"):
+                continue
+            if chosen == "auto":
+                crop_name = None
+                for candidate in ("wheat", "carrots", "potatoes", "beetroots"):
+                    if await self._count(CROP_SPECS[candidate]["seed"]) > 0:
+                        crop_name = candidate
+                        break
+            else:
+                crop_name = chosen
+            if not crop_name:
+                break
+            x, y, z = int(cell["x"]), int(cell["y"]), int(cell["z"])
+            if not await self._approach_farm_cell(x, y, z):
+                continue
+            if await self._plant_crop(x, y, z, CROP_SPECS[crop_name]["seed"]):
+                planted[crop_name] = planted.get(crop_name, 0) + 1
+        return planted
+
+    async def _farm_discover(self, radius=12, plot_hint=""):
+        status = await self.status()
+        cells_by_key = {}
+        query = ",".join(spec["block"] for spec in CROP_SPECS.values())
+        crops = await self._call(
+            "scan_blocks", {"radius": max(2, min(12, int(radius))), "limit": 64, "block": query}, timeout=10,
+        )
+        for row in (crops.get("blocks") or []):
+            if not isinstance(row, dict):
+                continue
+            block = self._block_id(row.get("block"))
+            crop = CROP_BLOCKS.get(block)
+            if not crop:
+                continue
+            try:
+                x, y, z = int(row["x"]), int(row["y"]), int(row["z"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            try:
+                inspect = await self._call("inspect_block", {"x": x, "y": y, "z": z}, timeout=10)
+                age = self._crop_age(inspect.get("state"))
+            except Exception:
+                age = None
+            cells_by_key[(x, y - 1, z)] = {
+                "x": x, "y": y - 1, "z": z, "crop": crop, "age": age,
+            }
+        farms = await self._call(
+            "scan_blocks", {"radius": max(2, min(12, int(radius))), "limit": 64, "block": "minecraft:farmland"}, timeout=10,
+        )
+        for row in (farms.get("blocks") or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                x, y, z = int(row["x"]), int(row["y"]), int(row["z"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            key = (x, y, z)
+            if key in cells_by_key:
+                continue
+            try:
+                above = await self._call("inspect_block", {"x": x, "y": y + 1, "z": z}, timeout=10)
+            except Exception:
+                above = {}
+            crop = CROP_BLOCKS.get(self._block_id(above.get("block")), "empty")
+            cells_by_key[key] = {"x": x, "y": y, "z": z, "crop": crop or "empty", "age": self._crop_age(above.get("state"))}
+        if not cells_by_key:
+            return {"plots": [], "cells": 0, "_cells": []}
+        water_rows = []
+        try:
+            water = await self._call(
+                "scan_blocks", {"radius": max(2, min(16, int(radius) + 4)), "limit": 32, "block": "minecraft:water"}, timeout=10,
+            )
+            water_rows = [row for row in (water.get("blocks") or []) if isinstance(row, dict)]
+        except Exception:
+            pass
+        memory = self._farm_memory()
+        existing = {str(plot["id"]): plot for plot in (memory.list() if memory else [])}
+        existing_by_cells = {
+            frozenset((int(cell["x"]), int(cell["y"]), int(cell["z"])) for cell in plot["cells"]): plot
+            for plot in existing.values()
+        }
+        plots = []
+        used_ids = set(existing)
+        for group in self._group_farm_cells(list(cells_by_key.values())):
+            group_cells = [cells_by_key[key] for key in group]
+            cell_key = frozenset(group)
+            old = existing_by_cells.get(cell_key)
+            if old is None:
+                def near(candidate_plot):
+                    keys = {
+                        (int(cell["x"]), int(cell["y"]), int(cell["z"]))
+                        for cell in (candidate_plot.get("cells") or [])
+                    }
+                    for x, y, z in group:
+                        for dx, dz in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)):
+                            if (x + dx, y, z + dz) in keys:
+                                return True
+                    return False
+
+                for candidate in existing.values():
+                    if near(candidate):
+                        old = candidate
+                        merged = {
+                            (int(cell["x"]), int(cell["y"]), int(cell["z"])): cell
+                            for cell in (candidate.get("cells") or [])
+                        }
+                        for cell in group_cells:
+                            merged[(int(cell["x"]), int(cell["y"]), int(cell["z"]))] = cell
+                        group_cells = list(merged.values())[:MAX_CELLS]
+                        break
+            if old is not None:
+                plot_id = old["id"]
+                name = old.get("name") or plot_id
+            else:
+                index = 1
+                while f"farm-{index}" in used_ids:
+                    index += 1
+                plot_id = _text(plot_hint, 32) if plot_hint else f"farm-{index}"
+                if plot_id in used_ids:
+                    index += 1
+                    while f"farm-{index}" in used_ids:
+                        index += 1
+                    plot_id = f"farm-{index}"
+                name = f"菜地{index}"
+            used_ids.add(plot_id)
+            record = {
+                "id": plot_id,
+                "name": name,
+                "world_key": str(status.get("world_key") or ""),
+                "dimension": str(status.get("dimension") or ""),
+                "cells": [{"x": cell["x"], "y": cell["y"], "z": cell["z"],
+                           "crop": cell.get("crop") or "empty"} for cell in group_cells],
+                "water_cells": self._farm_water_near(group_cells, water_rows),
+            }
+            if memory is not None:
+                try:
+                    record = memory.upsert(record)
+                except ValueError:
+                    continue
+                existing[record["id"]] = record
+                existing_by_cells[frozenset(
+                    (int(cell["x"]), int(cell["y"]), int(cell["z"]))
+                    for cell in record.get("cells") or []
+                )] = record
+            plots.append(self._farm_summary(record))
+        return {"plots": plots, "cells": len(cells_by_key), "_cells": list(cells_by_key.values())}
+
+    @staticmethod
+    def _farm_summary(plot):
+        cells = plot.get("cells") or []
+        crops = {}
+        for cell in cells:
+            crop = str(cell.get("crop") or "empty")
+            crops[crop] = crops.get(crop, 0) + 1
+        return {
+            "id": plot.get("id"),
+            "name": plot.get("name"),
+            "cells": len(cells),
+            "shape": plot.get("shape") or "irregular",
+            "crops": crops,
+            "water_cells": len(plot.get("water_cells") or []),
+            "bounds": plot.get("bounds"),
+            "updated_at": plot.get("updated_at"),
+        }
+
+    async def _farm_status(self, plot_id=""):
+        memory = self._farm_memory()
+        if plot_id:
+            plots = [memory.get(plot_id)] if memory else []
+            plots = [plot for plot in plots if plot]
+        else:
+            if memory is None or not memory.list():
+                await self._farm_discover()
+            plots = memory.list() if memory else []
+        result = []
+        for plot in plots:
+            counts = {"mature": 0, "immature": 0, "empty": 0}
+            crops = {}
+            for cell in plot.get("cells") or []:
+                state = await self._farm_cell_state(cell)
+                if state.get("empty"):
+                    counts["empty"] += 1
+                elif state.get("mature"):
+                    counts["mature"] += 1
+                    crop = state.get("crop") or "empty"
+                    crops[crop] = crops.get(crop, 0) + 1
+                else:
+                    counts["immature"] += 1
+            summary = self._farm_summary(plot)
+            summary.update(counts)
+            summary["mature_crops"] = crops
+            result.append(summary)
+        return result
+
+    async def _farm_till_and_plant(self, cells, crop, dry_run=False):
+        chosen = self._crop_name(crop or "auto")
+        tilled = planted = 0
+        shortages = []
+        for cell in cells:
+            x, y, z = int(cell["x"]), int(cell["y"]), int(cell["z"])
+            try:
+                below = await self._call("inspect_block", {"x": x, "y": y, "z": z}, timeout=10)
+            except Exception:
+                continue
+            block = self._block_id(below.get("block"))
+            if block not in {"minecraft:farmland", "minecraft:dirt", "minecraft:grass_block", "minecraft:dirt_path"}:
+                continue
+            if not await self._approach_farm_cell(x, y, z):
+                continue
+            if block != "minecraft:farmland":
+                if dry_run:
+                    tilled += 1
+                else:
+                    try:
+                        await self._run("till", {"x": x, "y": y, "z": z}, seconds=6)
+                        tilled += 1
+                    except Exception as exc:
+                        shortages.append(f"翻地 {x},{y},{z}: {exc}")
+                        continue
+            if dry_run:
+                continue
+            if chosen == "auto":
+                crop_name = None
+                for candidate in ("wheat", "carrots", "potatoes", "beetroots"):
+                    if await self._count(CROP_SPECS[candidate]["seed"]) > 0:
+                        crop_name = candidate
+                        break
+            else:
+                crop_name = chosen
+            if not crop_name:
+                shortages.append("没有可用种子")
+                break
+            if await self._plant_crop(x, y, z, CROP_SPECS[crop_name]["seed"]):
+                planted += 1
+        return tilled, planted, shortages
+
+    def _farm_cells_from_mask(self, mask, origin, crop):
+        ox, oy, oz = _position(origin)
+        rows = [row for row in re.split(r"[/\n]+", str(mask or "").strip()) if row.strip()]
+        cells = []
+        water = []
+        crop_map = {"1": "wheat", "2": "carrots", "3": "potatoes", "4": "beetroots"}
+        chosen = self._crop_name(crop or "auto")
+        for dz, row in enumerate(rows):
+            for dx, char in enumerate(row.strip()):
+                if char in {"#", "X", "x", "1", "2", "3", "4"}:
+                    cell_crop = crop_map.get(char)
+                    if not cell_crop:
+                        cell_crop = chosen if chosen in CROP_SPECS else "empty"
+                    cells.append({"x": ox + dx, "y": oy, "z": oz + dz, "crop": cell_crop})
+                elif char == "~":
+                    water.append({"x": ox + dx, "y": oy, "z": oz + dz})
+                if len(cells) > MAX_CELLS:
+                    raise SkillError(f"田块最多 {MAX_CELLS} 格")
+        return cells, water
+
+    async def farm_plot(self, operation="status", plot="", radius=12, count=32, crop="auto",
+                        cells=None, mask="", origin=None, replant=True, dry_run=False):
+        operation = str(operation or "status").strip().lower()
+        if operation not in {"discover", "status", "harvest", "plant", "create", "list", "forget"}:
+            raise SkillError("operation 只能是 discover/status/harvest/plant/create/list/forget")
+        chosen = self._crop_name(crop or "auto")
+        if chosen not in set(CROP_SPECS) | {"auto"}:
+            raise SkillError("crop 只能是 auto/wheat/carrots/potatoes/beetroots")
+        memory = self._farm_memory()
+        if operation == "list":
+            return {"skill": "farm_plot", "plots": [self._farm_summary(row) for row in (memory.list() if memory else [])]}
+        if operation == "forget":
+            if not plot or memory is None:
+                raise SkillError("forget 需要 plot")
+            return {"skill": "farm_plot", "forget": bool(memory.forget(plot)), "plot": plot}
+        if operation == "discover":
+            result = await self._farm_discover(radius=radius, plot_hint=plot)
+            result.pop("_cells", None)
+            return {"skill": "farm_plot", "operation": "discover", **result}
+        if operation == "status":
+            plots = await self._farm_status(plot)
+            return {"skill": "farm_plot", "operation": "status", "plots": plots}
+        if operation == "create":
+            water = []
+            if mask:
+                if origin is None:
+                    status = await self.status()
+                    position = status.get("position") or {}
+                    origin = [int(position.get("x", 0)), int(position.get("y", 64)), int(position.get("z", 0))]
+                planned, water = self._farm_cells_from_mask(mask, origin, chosen)
+            elif cells:
+                planned = []
+                for row in cells:
+                    if isinstance(row, dict):
+                        parsed = {"x": row.get("x"), "y": row.get("y"), "z": row.get("z"),
+                                  "crop": self._crop_name(row.get("crop") or chosen)}
+                    elif isinstance(row, (list, tuple)) and len(row) >= 3:
+                        parsed = {"x": row[0], "y": row[1], "z": row[2], "crop": chosen}
+                    else:
+                        continue
+                    try:
+                        parsed["x"], parsed["y"], parsed["z"] = int(parsed["x"]), int(parsed["y"]), int(parsed["z"])
+                    except (TypeError, ValueError):
+                        continue
+                    if parsed["crop"] not in CROP_SPECS:
+                        parsed["crop"] = "empty"
+                    planned.append(parsed)
+                if len(planned) > MAX_CELLS:
+                    raise SkillError(f"田块最多 {MAX_CELLS} 格")
+            else:
+                status = await self.status()
+                position = status.get("position") or {}
+                ox, oy, oz = int(position.get("x", 0)), int(position.get("y", 64)), int(position.get("z", 0))
+                data = await self._call(
+                    "scan_blocks", {"radius": max(2, min(6, int(radius))), "limit": 32,
+                                     "block": "minecraft:dirt,minecraft:grass_block,minecraft:dirt_path"},
+                    timeout=10,
+                )
+                planned = []
+                for row in (data.get("blocks") or []):
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        x, y, z = int(row["x"]), int(row["y"]), int(row["z"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if abs(x - ox) + abs(z - oz) > 6:
+                        continue
+                    try:
+                        above = await self._call("inspect_block", {"x": x, "y": y + 1, "z": z}, timeout=8)
+                    except Exception:
+                        continue
+                    if not (above.get("air") or above.get("replaceable")):
+                        continue
+                    planned.append({"x": x, "y": y, "z": z, "crop": chosen if chosen in CROP_SPECS else "empty"})
+                    if len(planned) >= max(1, min(256, int(count))):
+                        break
+                if not planned:
+                    raise SkillError("附近没有可开垦的泥土/草方块")
+            tilled, planted, shortages = await self._farm_till_and_plant(planned, chosen, dry_run=dry_run)
+            shape = self._farm_shape(planned)
+            plot_id = plot or ""
+            if not dry_run and memory is not None and planned:
+                status = await self.status()
+                if not plot_id:
+                    existing = {row["id"] for row in memory.list()}
+                    index = 1
+                    while f"farm-{index}" in existing:
+                        index += 1
+                    plot_id = f"farm-{index}"
+                record = {
+                    "id": plot_id,
+                    "name": f"菜地{plot_id.split('-')[-1]}" if plot_id.startswith("farm-") else plot_id,
+                    "world_key": str(status.get("world_key") or ""),
+                    "dimension": str(status.get("dimension") or ""),
+                    "cells": planned,
+                    "water_cells": water,
+                }
+                try:
+                    memory.upsert(record)
+                except ValueError as exc:
+                    shortages.append(str(exc))
+            return {
+                "skill": "farm_plot", "operation": "create", "plot": plot_id,
+                "cells": len(planned), "shape": shape, "tilled": tilled,
+                "planted": planted, "water_cells": len(water),
+                "shortages": shortages, "dry_run": bool(dry_run),
+            }
+        if operation == "harvest":
+            if plot and memory is not None:
+                record = memory.get(plot)
+                if not record:
+                    raise SkillError("找不到田块：" + plot)
+                target_cells = record.get("cells") or []
+            else:
+                discovered = await self._farm_discover(radius=radius)
+                scanned_cells = discovered.pop("_cells", [])
+                target_cells = []
+                if memory is not None:
+                    for row in memory.list():
+                        target_cells.extend(row.get("cells") or [])
+                if not target_cells:
+                    target_cells = scanned_cells
+            harvested, planted = await self._farm_harvest_cells(target_cells, count, replant=replant)
+            return {
+                "skill": "farm_plot", "operation": "harvest",
+                "harvested": sum(harvested.values()), "planted": sum(planted.values()),
+                "crops": {"harvested": harvested, "planted": planted},
+            }
+        if operation == "plant":
+            if plot and memory is not None:
+                record = memory.get(plot)
+                if not record:
+                    raise SkillError("找不到田块：" + plot)
+                target_cells = record.get("cells") or []
+            else:
+                discovered = await self._farm_discover(radius=radius)
+                scanned_cells = discovered.pop("_cells", [])
+                target_cells = []
+                if memory is not None:
+                    for row in memory.list():
+                        target_cells.extend(row.get("cells") or [])
+                if not target_cells:
+                    target_cells = scanned_cells
+            planted = await self._farm_plant_cells(target_cells, chosen, count)
+            return {
+                "skill": "farm_plot", "operation": "plant",
+                "planted": sum(planted.values()), "crops": planted,
+            }
+        raise SkillError("未知田块操作")
+
+
     def _memory(self):
         getter = getattr(self.plugin, "_poi_memory_for", None)
         return getter() if callable(getter) else None
 
+    # ------------------------------------------------------------------- sleep
     async def sleep_at(self, x, y, z):
         """L1: 查床上下文、走到站位、交互并确认进入睡眠。"""
         x, y, z = int(x), int(y), int(z)
@@ -2621,6 +3377,160 @@ class VanillaSkills:
         await self.smelt("minecraft:iron_ingot", missing)
         return self.item_count(await self.status(), "minecraft:iron_ingot")
 
+    async def _food_containers(self, radius=16, limit=8):
+        data = await self._call(
+            "scan_blocks",
+            {"radius": max(2, min(16, int(radius))), "limit": max(1, min(16, int(limit))),
+             "block": "chest,trapped_chest,barrel"},
+            timeout=10,
+        )
+        rows = [row for row in (data.get("blocks") or []) if isinstance(row, dict)]
+        rows.sort(key=lambda row: _num(row.get("distance"), 999))
+        return rows
+
+    async def _withdraw_food(self, points_needed, deadline, radius=16):
+        if points_needed <= 0:
+            return {"withdrawn": 0, "items": [], "containers": 0}
+        withdrawn = 0
+        items = []
+        containers = 0
+        for row in await self._food_containers(radius=radius):
+            if time.monotonic() >= deadline or withdrawn >= points_needed:
+                break
+            containers += 1
+            try:
+                read = await self.open_and_read({"x": int(row["x"]), "y": int(row["y"]), "z": int(row["z"])})
+            except SkillError:
+                continue
+            moves = []
+            for slot in (read.get("slots") or []):
+                if not isinstance(slot, dict) or slot.get("safe_food") is not True:
+                    continue
+                item_id = str(slot.get("id") or "")
+                try:
+                    count = int(slot.get("count", 0) or 0)
+                    nutrition = int(slot.get("nutrition", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if not item_id or count <= 0:
+                    continue
+                if nutrition <= 0:
+                    nutrition = int(FOOD_NUTRITION.get(item_id, 1) or 1)
+                reserve = 1 if count > 1 else 0
+                take = min(count - reserve, max(0, int(math.ceil((points_needed - withdrawn) / max(1, nutrition)))))
+                if take > 0:
+                    moves.append({"item": item_id, "count": take})
+                    withdrawn += take * nutrition
+            if not moves:
+                continue
+            try:
+                result = await self.transfer_many(
+                    moves, direction="from_container",
+                    x=int(row["x"]), y=int(row["y"]), z=int(row["z"]), close=True,
+                )
+                moved = int(result.get("moved", 0) or 0)
+                if moved:
+                    items.extend(result.get("items") or [])
+            except SkillError:
+                continue
+        return {"withdrawn": withdrawn, "items": items, "containers": containers}
+
+    async def _cook_and_craft_food(self, points_needed):
+        actions = []
+        shortages = []
+        if points_needed <= 0:
+            return actions, shortages
+        status = await self.status()
+        for raw_id, cooked_id in RAW_FOOD_COOKING.items():
+            try:
+                count = self.item_count(status, raw_id)
+            except Exception:
+                count = 0
+            if count <= 0:
+                continue
+            try:
+                await self.smelt(cooked_id, min(32, count))
+                actions.append(f"smelt:{cooked_id}")
+                status = await self.status()
+            except SkillError as exc:
+                shortages.append(f"烹饪 {cooked_id}: {exc}")
+        wheat = self.item_count(await self.status(), "minecraft:wheat")
+        if wheat >= 3:
+            bread_needed = min(16, max(1, int(math.ceil(points_needed / 5))))
+            if wheat >= bread_needed * 3:
+                try:
+                    await self.craft("minecraft:bread", bread_needed)
+                    actions.append(f"craft:bread x{bread_needed}")
+                except SkillError as exc:
+                    shortages.append(f"面包: {exc}")
+        return actions, shortages
+
+    async def ensure_food(self, points=40, max_seconds=600, withdraw=True, harvest=True,
+                          cook=True, trade=True):
+        target = max(0, min(256, int(points)))
+        deadline = time.monotonic() + max(30, min(900, int(max_seconds)))
+        status = await self.status()
+        before_points = self.food_points(status)
+        before_count = self.food_count(status)
+        actions, shortages = [], []
+        if target <= before_points:
+            return {
+                "skill": "ensure_food", "target_points": target,
+                "before_points": before_points, "after_points": before_points,
+                "before_items": before_count, "after_items": before_count,
+                "actions": actions, "shortages": shortages, "complete": True,
+            }
+        if withdraw:
+            try:
+                result = await self._withdraw_food(target - before_points, deadline)
+                if result.get("withdrawn"):
+                    actions.append("container_food")
+            except SkillError as exc:
+                shortages.append(f"食物箱: {exc}")
+        if harvest and self.food_points(await self.status()) < target:
+            memory = self._farm_memory()
+            if memory is not None and memory.list():
+                try:
+                    result = await self.farm_plot("harvest", count=64, replant=True)
+                    if result.get("harvested"):
+                        actions.append(f"farm_plot:harvest x{result['harvested']}")
+                except SkillError as exc:
+                    shortages.append(f"收田块: {exc}")
+            for crop in ("potatoes", "carrots", "wheat", "beetroots"):
+                if self.food_points(await self.status()) >= target or time.monotonic() >= deadline:
+                    break
+                try:
+                    result = await self.farm("harvest", radius=12, count=16, replant=True, crop=crop)
+                    if result.get("harvested"):
+                        actions.append(f"harvest:{crop} x{result['harvested']}")
+                except SkillError as exc:
+                    shortages.append(f"收{crop}: {exc}")
+        if cook and self.food_points(await self.status()) < target:
+            cooked_actions, cooked_shortages = await self._cook_and_craft_food(
+                max(0, target - self.food_points(await self.status())),
+            )
+            actions.extend(cooked_actions)
+            shortages.extend(cooked_shortages)
+        if trade and self.food_points(await self.status()) < target and time.monotonic() < deadline:
+            missing = max(1, int(math.ceil((target - self.food_points(await self.status())) / 5)))
+            for item in ("minecraft:bread", "minecraft:baked_potato"):
+                try:
+                    await self.trade_for(item, min(8, missing))
+                    actions.append(f"trade:{item}")
+                    break
+                except SkillError as exc:
+                    shortages.append(f"交易 {item}: {exc}")
+        after_status = await self.status()
+        after_points = self.food_points(after_status)
+        after_count = self.food_count(after_status)
+        return {
+            "skill": "ensure_food", "target_points": target,
+            "before_points": before_points, "after_points": after_points,
+            "before_items": before_count, "after_items": after_count,
+            "actions": actions, "shortages": shortages,
+            "complete": after_points >= target,
+        }
+
     async def resupply(self, food=8, torches=8, blocks=32, tools=True, max_seconds=300):
         food_target = max(0, min(64, int(food)))
         torch_target = max(0, min(64, int(torches)))
@@ -2631,12 +3541,16 @@ class VanillaSkills:
         async def snapshot():
             status = await self.status()
             items = self.inventory_items(status)
-            safe_food = sum(int(row.get("count", 0)) for row in items if row.get("safe_food") is True)
+            safe_food = self.food_count(status)
+            food_points = self.food_points(status)
             torch_count = self.item_count(status, "minecraft:torch")
             block_count = self.item_count(status, "minecraft:cobblestone")
             tool_ids = [str(row.get("id", "")) for row in items]
             tool_ok = all(any(tool_rank(item_id) >= 3 and item_id.endswith(suffix) for item_id in tool_ids) for suffix in TOOL_SUFFIXES)
-            return {"food": safe_food, "torches": torch_count, "cobblestone": block_count, "tools_ok": tool_ok}
+            return {
+                "food": safe_food, "food_points": food_points,
+                "torches": torch_count, "cobblestone": block_count, "tools_ok": tool_ok,
+            }
 
         before = await snapshot()
         if tools and not before["tools_ok"]:
@@ -2698,17 +3612,25 @@ class VanillaSkills:
             shortages.append("补给超时，剩余项目未执行")
         else:
             status = await self.status()
-            safe_food = sum(int(row.get("count", 0)) for row in self.inventory_items(status) if row.get("safe_food") is True)
-            missing = max(0, food_target - safe_food)
-            if missing:
+            food_target_points = food_target * 5
+            current_points = self.food_points(status)
+            if current_points < food_target_points:
                 try:
-                    await self.craft("minecraft:bread", missing)
-                    actions.append("craft:bread")
+                    result = await self.ensure_food(
+                        food_target_points,
+                        max_seconds=max(30, int(deadline - time.monotonic())),
+                    )
+                    actions.extend(result.get("actions") or [])
+                    shortages.extend(result.get("shortages") or [])
+                    if not result.get("complete"):
+                        shortages.append(
+                            f"食物不足：{result.get('after_points', 0)}/{food_target_points} 点"
+                        )
                 except SkillError as exc:
                     shortages.append(f"食物: {exc}")
         after = await snapshot()
         complete = (
-            after["food"] >= food_target
+            after["food_points"] >= food_target * 5
             and after["torches"] >= torch_target
             and after["cobblestone"] >= block_target
             and (not tools or after["tools_ok"])
@@ -2717,7 +3639,10 @@ class VanillaSkills:
             "skill": "resupply",
             "before": before,
             "after": after,
-            "targets": {"food": food_target, "torches": torch_target, "cobblestone": block_target, "tools": bool(tools)},
+            "targets": {
+                "food": food_target, "food_points": food_target * 5,
+                "torches": torch_target, "cobblestone": block_target, "tools": bool(tools),
+            },
             "actions": actions,
             "shortages": shortages,
             "complete": complete,
@@ -2906,6 +3831,119 @@ class VanillaSkills:
                 return {"skill": "attack_target", "target": target_text, "attacked": attacked, "result": "killed", "enemy": data.get("target")}
             await asyncio.sleep(0.65)
         return {"skill": "attack_target", "target": target_text, "attacked": attacked, "result": "timeout"}
+
+    async def hunt(self, target="auto", count=2, radius=24, max_seconds=180,
+                   return_home=True, cook=True):
+        target = str(target or "auto").strip().lower()
+        if target not in {"auto", "cow", "pig", "sheep", "chicken", "rabbit"}:
+            raise SkillError("hunt target 只能是 auto/cow/pig/sheep/chicken/rabbit")
+        requested = max(1, min(8, int(count)))
+        radius = max(4, min(32, int(radius)))
+        deadline = time.monotonic() + max(10, min(300, int(max_seconds)))
+        wanted_type = "" if target == "auto" else f"minecraft:{target}"
+        selector = getattr(self.plugin, "_select_best_weapon", None)
+        if callable(selector):
+            try:
+                await selector()
+            except Exception:
+                pass
+        hunted = 0
+        errors = []
+        collected = {}
+        while hunted < requested and time.monotonic() < deadline:
+            status = await self.status()
+            if _num(status.get("health"), 20) <= 8:
+                errors.append("血量过低，停止打猎")
+                break
+            danger = [
+                row for row in (status.get("hostiles") or [])
+                if isinstance(row, dict) and _num(row.get("distance"), 999) <= 5
+            ]
+            if danger:
+                errors.append("附近有敌人，停止打猎")
+                break
+            data = await self._call(
+                "scan_entities", {"radius": radius, "limit": 32}, timeout=10,
+            )
+            candidates = []
+            for row in (data.get("entities") or []):
+                if not isinstance(row, dict):
+                    continue
+                row_type = str(row.get("type") or "")
+                if row_type not in HUNTABLE:
+                    continue
+                if row.get("baby") is True or row.get("tamed") is True:
+                    continue
+                if wanted_type and row_type != wanted_type:
+                    continue
+                candidates.append(row)
+            if not candidates:
+                if not errors:
+                    errors.append("附近没有可猎取的被动动物")
+                break
+            row = min(candidates, key=lambda item: _num(item.get("distance"), 999))
+            row_type = str(row.get("type") or "")
+            raw_item = HUNTABLE[row_type]
+            try:
+                x, y, z = int(row["x"]), int(row["y"]), int(row["z"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if _num(row.get("distance"), 99) > 2.8:
+                error = await self.plugin._approach_target(x, y, z, seconds=10, reach=2.2)
+                if error:
+                    errors.append(f"接近猎物失败：{error}")
+                    continue
+            try:
+                result = await self._call(
+                    "hunt", {"uuid": str(row.get("uuid") or ""), "type": row_type}, timeout=10,
+                )
+            except SkillError as exc:
+                errors.append(f"攻击猎物失败：{exc}")
+                await asyncio.sleep(0.3)
+                continue
+            if result.get("dead"):
+                hunted += 1
+                await self._pickup_near(x, y, z, raw_item)
+                collected[raw_item] = self.item_count(await self.status(), raw_item)
+                self._mark("hunt", "hunting", hunted, requested, {"raw": dict(collected)})
+            else:
+                await asyncio.sleep(0.45)
+        returned = False
+        if return_home:
+            try:
+                await self.return_home()
+                returned = True
+            except SkillError as exc:
+                errors.append(f"回家失败：{exc}")
+        cooked = {}
+        if cook:
+            for raw_item in HUNTABLE.values():
+                count_have = self.item_count(await self.status(), raw_item)
+                cooked_item = RAW_FOOD_COOKING.get(raw_item)
+                if count_have <= 0 or not cooked_item:
+                    continue
+                try:
+                    await self.smelt(cooked_item, min(32, count_have))
+                    cooked[cooked_item] = self.item_count(await self.status(), cooked_item)
+                except SkillError as exc:
+                    errors.append(f"烹饪 {cooked_item} 失败：{exc}")
+        collected = {
+            raw_item: self.item_count(await self.status(), raw_item)
+            for raw_item in HUNTABLE.values()
+            if self.item_count(await self.status(), raw_item) > 0
+        }
+        outcome = "fulfilled" if hunted >= requested else ("partial" if hunted > 0 else "unmet")
+        return {
+            "skill": "hunt",
+            "target": target,
+            "requested": requested,
+            "hunted": hunted,
+            "raw": collected,
+            "cooked": cooked,
+            "returned": returned,
+            "errors": errors,
+            "goal_outcome": outcome,
+        }
 
     async def combat(self, target="", max_seconds=30, retreat_health=8,
                      hold_health=None, finish_low_target=False, max_targets=0,

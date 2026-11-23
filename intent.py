@@ -134,6 +134,18 @@ def classify_task(text):
         return _result("resupply", {}, 0.9, "补给物资", original)
     if re.search(r"探索|探路|侦察|巡逻|explore", body):
         return _result("explore", {"goal": "generic"}, 0.86, "有界探索", original)
+    if re.search(r"菜地|田块|不规则|开田|开垦|收菜|farm[_ ]?plot", body):
+        if re.search(r"开田|开垦|新建|create", body):
+            operation = "create"
+        elif re.search(r"收菜|收割|收获|harvest", body):
+            operation = "harvest"
+        elif re.search(r"种|plant", body):
+            operation = "plant"
+        elif re.search(r"发现|记录|discover", body):
+            operation = "discover"
+        else:
+            operation = "status"
+        return _result("farm_plot", {"operation": operation}, 0.84, "不规则田块", original)
     if re.search(r"收割|收获|种地|农田|农场|farm", body):
         operation = "both" if "种" in body else "harvest"
         return _result("farm", {"operation": operation}, 0.82, "农业任务", original)
@@ -163,6 +175,14 @@ def classify_task(text):
         item = _item(body)
         if item:
             return _result("trade_for", {"item": item, "count": _count(body, 1)}, 0.72, "村民交易", original)
+
+    if re.search(r"打猎|狩猎|猎取|杀牛|杀猪|杀羊|杀鸡|杀兔|hunt", body):
+        animal = re.search(r"(牛|猪|羊|鸡|兔|cow|pig|sheep|chicken|rabbit)", body)
+        target = {
+            "牛": "cow", "猪": "pig", "羊": "sheep", "鸡": "chicken", "兔": "rabbit",
+            "cow": "cow", "pig": "pig", "sheep": "sheep", "chicken": "chicken", "rabbit": "rabbit",
+        }.get(animal.group(1), "auto") if animal else "auto"
+        return _result("hunt", {"target": target, "count": _count(body, 2)}, 0.86, "打猎", original)
 
     if re.search(r"打|杀|攻击|揍|combat|attack", body):
         target = re.sub(r"^(?:去|把|帮我|给我)?(?:打|杀|攻击|揍|combat|attack)\s*", "", body)

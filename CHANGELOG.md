@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.6.0
+
+- **A. 自主收集食物**：
+  - `resupply` 改为按**饱食度点数**计算缺口，不再把 16 根胡萝卜和 16 个面包当成一样。
+  - `farm` 支持小麦、胡萝卜、土豆、甜菜根，按作物年龄判断成熟，并补种对应种子。
+  - `resupply` 会先翻附近箱子/木桶取出现成食物，再收现有作物、烤土豆/烤肉、做面包；仍不够时尝试向村民购买面包/烤土豆。
+  - 新增 `ensure_food` 内部流程：食物箱 → 现有农田 → 烹饪/烘焙 → 村民交易，返回实际点数、动作和缺口。
+- **B. 定时自主食物补给**：
+  - `survival.py` 在 `defend/full` 模式下，当饱食度低、几乎没有可吃食物、无主人任务、无敌人时，自动入队 `resupply`。
+  - 新增 `auto_food_resupply`、`auto_food_resupply_food`、`auto_food_resupply_min_food`、`auto_food_resupply_cooldown_seconds` 配置；默认 30 分钟冷却，失败不会反复刷屏。
+- **C. 不规则田块**：
+  - 新增 `farm_plots.json` 本地田块记忆：每块田是**格子集合**，不是矩形；支持 L 形、缺角、梯田和水渠，并能记录每格作物。
+  - 新增 `mc_farm_plot` / `farm_plot` 技能：`discover` 自动把相邻耕地聚成不规则田块，`status` 统计成熟/未熟/空地/水源，`harvest` 收割并补种，`plant` 补种，`create` 支持 `cells` 或 `mask`（`#` 作物、`~` 水、`.` 跳过）开垦不规则形状，`list/forget` 管理记忆。
+  - `resupply` 会优先收割已记录的田块，再回退到半径扫描。
+- **D. 打猎**：
+  - 新增 `mc_hunt` / `hunt` 技能：猎取成年牛、猪、羊、鸡、兔，避开幼崽、已驯服宠物和村民，拾取生肉后可回家用熔炉烤熟。
+  - Java mod 新增 `hunt` 动作，只接受白名单被动动物；`scan_entities` 增加 `passive/baby/tamed` 字段；mod 版本升至 `0.9.0`。
+  - 钓鱼需要单独的客户端收杆状态机，作为后续扩展保留；本次先打通打猎这条即时肉类来源。
+- 工具总数从 76 增至 **78**（`mc_farm_plot`、`mc_hunt`），测试总数 448。
+
 ## 1.5.14
 
 - `gather` 新增沙子/红沙支持：识别 `sand`、`red_sand` 及“沙子/沙”别名，普通扫描为空时回退到 `scan_blocks` 按 `sand,red_sand` 查找，并在库存统计里合并两种沙子。

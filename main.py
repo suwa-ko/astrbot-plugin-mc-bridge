@@ -5111,7 +5111,7 @@ class McBridgePlugin(Star):
         count = max(1, min(8, int(count)))
         radius = max(1, min(16, int(radius)))
         allow_break = bool(allow_break)
-        data = await self._call("scan_entities", {"radius": radius, "limit": 32}, timeout=10)
+        data = await self._call("scan_entities", {"radius": radius, "limit": 32, "type": "minecraft:item"}, timeout=10)
         err = self._err(data)
         if err:
             return err

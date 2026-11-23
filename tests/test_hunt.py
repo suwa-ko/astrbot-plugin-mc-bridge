@@ -167,7 +167,7 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
 
         async def call(action, params=None, timeout=10):
             if action == "scan_entities":
-                if params and "type" in params:
+                if params and params.get("type") in skills_mod.HUNTABLE:
                     scans.append(params["type"])
                 return {"entities": [{
                     "uuid": "crane-1", "type": "genshin_nature:azurecrane", "x": 1, "y": 64, "z": 0,
@@ -192,7 +192,7 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
 
         async def call(action, params=None, timeout=10):
             if action == "scan_entities":
-                if params and "type" in params:
+                if params and params.get("type") in skills_mod.HUNTABLE:
                     scans.append(params["type"])
                 if params.get("type") == "minecraft:cow":
                     return {"entities": [{

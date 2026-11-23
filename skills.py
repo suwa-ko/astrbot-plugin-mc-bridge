@@ -556,7 +556,11 @@ class VanillaSkills:
 
     async def _pickup_near(self, x, y, z, resource, radius=5):
         for attempt in range(3):
-            data = await self._call("scan_entities", {"radius": radius, "limit": 32}, timeout=10)
+            data = await self._call(
+                "scan_entities",
+                {"radius": radius, "limit": 32, "type": "minecraft:item"},
+                timeout=10,
+            )
             rows = [row for row in (data.get("entities") or []) if isinstance(row.get("item"), dict)]
             rows = [
                 row for row in rows
@@ -1363,14 +1367,17 @@ class VanillaSkills:
                 raise SkillError("工作台坐标无效") from exc
             table_pos = [int(tx), int(ty), int(tz)]
         before = await self._count(item)
-        ensured = await self.ensure_item(item, before + target, depth=0, table_pos=table_pos)
-        after = await self._count(item)
-        return {
-            "skill": "craft",
-            "item": item,
-            "requested": target,
-            "produced": max(0, max(after, int(ensured or 0)) - before),
-        }
+        try:
+            ensured = await self.ensure_item(item, before + target, depth=0, table_pos=table_pos)
+            after = await self._count(item)
+            return {
+                "skill": "craft",
+                "item": item,
+                "requested": target,
+                "produced": max(0, max(after, int(ensured or 0)) - before),
+            }
+        finally:
+            await self._ensure_no_screen()
 
     # ------------------------------------------------------------------ smelt
     async def _find_furnace(self, radius=12):
@@ -2034,23 +2041,41 @@ class VanillaSkills:
                 break
         return found
 
-    async def _approach_farm_cell(self, x, y, z):
+    async def _approach_farm_cell(self, x, y, z, avoid_column=False):
         try:
             context = await self._call("block_context", {"x": int(x), "y": int(y), "z": int(z)}, timeout=8)
         except Exception:
             return False
-        if _num(context.get("distance"), 0) <= 4.0:
-            return True
         stands = [row for row in (context.get("stands") or []) if isinstance(row, dict)]
+        if avoid_column:
+            stands = [
+                row for row in stands
+                if (int(row.get("x", 0)), int(row.get("z", 0))) != (int(x), int(z))
+            ]
         if stands:
             stand = min(stands, key=lambda row: _num(row.get("distance"), 999))
             error = await self.plugin._approach_target(
-                stand["x"], stand.get("feet_y", stand["y"]), stand["z"],
-                seconds=10, reach=1.5,
+                stand["x"], stand.get("feet_y", stand.get("y", y)), stand["z"],
+                seconds=10, reach=0.5 if avoid_column else 1.5,
             )
+            if error:
+                return False
+        elif not avoid_column and _num(context.get("distance"), 0) <= 4.0:
+            return True
         else:
             error = await self.plugin._approach_target(int(x), int(y), int(z), seconds=10, reach=2.5)
-        return not error
+            if error:
+                return False
+        if avoid_column:
+            status = await self.status()
+            position = status.get("position") or {}
+            try:
+                feet = (math.floor(float(position["x"])), math.floor(float(position["z"])))
+            except (KeyError, TypeError, ValueError):
+                return False
+            if feet == (int(x), int(z)):
+                return False
+        return True
 
     async def _farm_cell_state(self, cell):
         try:
@@ -2076,32 +2101,44 @@ class VanillaSkills:
     async def _farm_harvest_cells(self, cells, count, replant=True):
         harvested = {}
         planted = {}
+        reasons = []
         target = max(1, min(256, int(count)))
         for cell in cells:
             if sum(harvested.values()) >= target:
                 break
             state = await self._farm_cell_state(cell)
             crop = state.get("crop")
-            if not crop or not state.get("mature"):
+            label = "%s,%s,%s" % (cell.get("x"), cell.get("y"), cell.get("z"))
+            if not crop:
+                reasons.append(label + " 不是作物")
+                continue
+            if not state.get("mature"):
+                reasons.append(label + " 未成熟")
                 continue
             x, y, z = int(cell["x"]), int(cell["y"]), int(cell["z"])
-            if not await self._approach_farm_cell(x, y + 1, z):
+            if not await self._approach_farm_cell(x, y + 1, z, avoid_column=True):
+                reasons.append(label + " 无法站到旁边")
                 continue
             spec = CROP_SPECS[crop]
             try:
                 await self._run("mine_at", {"x": x, "y": y + 1, "z": z}, seconds=10)
                 await self._pickup_near(x, y + 1, z, spec["item"])
                 harvested[crop] = harvested.get(crop, 0) + 1
-                if replant and await self._plant_crop(x, y, z, spec["seed"]):
-                    planted[crop] = planted.get(crop, 0) + 1
+                if replant:
+                    for attempt in range(3):
+                        if await self._plant_crop(x, y, z, spec["seed"]):
+                            planted[crop] = planted.get(crop, 0) + 1
+                            break
+                        await asyncio.sleep(0.25)
                 self._mark(
                     "farm_plot", "harvesting",
                     sum(harvested.values()) + sum(planted.values()),
                     target * 2, {"harvested": dict(harvested), "planted": dict(planted)},
                 )
-            except Exception:
+            except Exception as exc:
+                reasons.append(label + " 收割失败：" + type(exc).__name__)
                 continue
-        return harvested, planted
+        return harvested, planted, reasons
 
     async def _farm_plant_cells(self, cells, crop, count):
         chosen = self._crop_name(crop or "auto")
@@ -2134,7 +2171,13 @@ class VanillaSkills:
                 skipped += 1
                 reasons.append("无法接近格子")
                 continue
-            if await self._plant_crop(x, y, z, CROP_SPECS[crop_name]["seed"]):
+            planted_ok = False
+            for attempt in range(3):
+                if await self._plant_crop(x, y, z, CROP_SPECS[crop_name]["seed"]):
+                    planted_ok = True
+                    break
+                await asyncio.sleep(0.25)
+            if planted_ok:
                 planted[crop_name] = planted.get(crop_name, 0) + 1
             else:
                 skipped += 1
@@ -2501,7 +2544,7 @@ class VanillaSkills:
                         target_cells.extend(row.get("cells") or [])
                 if not target_cells:
                     target_cells = scanned_cells
-            harvested, planted = await self._farm_harvest_cells(target_cells, count, replant=replant)
+            harvested, planted, harvest_reasons = await self._farm_harvest_cells(target_cells, count, replant=replant)
             harvested_total = sum(harvested.values())
             requested = max(1, min(256, int(count)))
             return {
@@ -2512,6 +2555,7 @@ class VanillaSkills:
                 "partial": harvested_total < requested,
                 "planted": sum(planted.values()),
                 "crops": {"harvested": harvested, "planted": planted},
+                "reasons": harvest_reasons[:10],
             }
         if operation == "plant":
             if plot and memory is not None:
@@ -3788,11 +3832,20 @@ class VanillaSkills:
                 if isinstance(row, dict):
                     block = str(row.get("block") or "")
                     add_found(block or (goal if goal in {"logs", "stone", "wheat"} else "resource"), row, block)
+            chests = await self._call(
+                "scan_blocks",
+                {"radius": 12, "limit": 16,
+                 "block": "minecraft:chest,minecraft:trapped_chest,minecraft:barrel"},
+                timeout=10,
+            )
+            for row in (chests.get("blocks") or []):
+                if isinstance(row, dict):
+                    add_found("container", row, str(row.get("block") or ""))
             if goal in ORE_QUERIES:
                 for row in await self._gather_scan_fallback(goal, 12):
                     add_found(str(row.get("block") or goal), row, str(row.get("block") or goal))
             if goal in {"generic", "village"}:
-                entities = await self._call("scan_entities", {"radius": 16, "limit": 32}, timeout=10)
+                entities = await self._call("scan_entities", {"radius": 16, "limit": 32, "type": "minecraft:villager"}, timeout=10)
                 for row in (entities.get("entities") or []):
                     if not isinstance(row, dict):
                         continue

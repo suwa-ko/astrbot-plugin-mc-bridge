@@ -160,6 +160,59 @@ class HuntTests(unittest.IsolatedAsyncioTestCase):
         _, params = skills.validate_params("hunt", {"target": "azurecrane", "count": 1})
         self.assertEqual(params["target"], "genshin_nature:azurecrane")
 
+    async def test_hunt_scan_filters_by_concrete_type(self):
+        plugin = FakePlugin()
+        plugin.inventory = [{"id": "genshin_nature:fowl", "count": 1, "slot": 0}]
+        scans = []
+
+        async def call(action, params=None, timeout=10):
+            if action == "scan_entities":
+                if params and "type" in params:
+                    scans.append(params["type"])
+                return {"entities": [{
+                    "uuid": "crane-1", "type": "genshin_nature:azurecrane", "x": 1, "y": 64, "z": 0,
+                    "distance": 2.0, "baby": False, "tamed": False,
+                }]}
+            if action == "hunt":
+                return {"target": "Azure crane", "type": "genshin_nature:azurecrane", "dead": True, "health": 0}
+            return await FakePlugin._call(plugin, action, params, timeout)
+
+        plugin._call = call
+        skills = skills_mod.VanillaSkills(plugin)
+        skills.return_home = AsyncMock(return_value={"arrived": True})
+        skills.smelt = AsyncMock(return_value={"produced": 1})
+        result = await skills.hunt("azurecrane", count=1, radius=32, max_seconds=20, cook=False)
+        self.assertEqual(result["hunted"], 1)
+        self.assertEqual(scans, ["genshin_nature:azurecrane"])
+
+    async def test_hunt_auto_scans_each_whitelisted_type(self):
+        plugin = FakePlugin()
+        plugin.inventory = [{"id": "minecraft:beef", "count": 1, "slot": 0}]
+        scans = []
+
+        async def call(action, params=None, timeout=10):
+            if action == "scan_entities":
+                if params and "type" in params:
+                    scans.append(params["type"])
+                if params.get("type") == "minecraft:cow":
+                    return {"entities": [{
+                        "uuid": "cow-1", "type": "minecraft:cow", "x": 1, "y": 64, "z": 0,
+                        "distance": 2.0, "baby": False, "tamed": False,
+                    }]}
+                return {"entities": []}
+            if action == "hunt":
+                return {"target": "Cow", "type": "minecraft:cow", "dead": True, "health": 0}
+            return await FakePlugin._call(plugin, action, params, timeout)
+
+        plugin._call = call
+        skills = skills_mod.VanillaSkills(plugin)
+        skills.return_home = AsyncMock(return_value={"arrived": True})
+        result = await skills.hunt("auto", count=1, radius=32, max_seconds=20, cook=False)
+        self.assertEqual(result["hunted"], 1)
+        self.assertIn("minecraft:cow", scans)
+        self.assertIn("genshin_nature:azurecrane", scans)
+        self.assertEqual(scans, list(skills_mod.HUNTABLE))
+
     async def test_hunt_stops_at_meat_target(self):
         plugin = FakePlugin()
         plugin.inventory = [{"id": "minecraft:beef", "count": 10, "slot": 0}]

@@ -41,7 +41,13 @@ public final class BridgeClient {
             "minecraft:cow", "minecraft:pig", "minecraft:sheep",
             "minecraft:chicken", "minecraft:rabbit",
             "genshin_nature:boar", "genshin_nature:shroomboar",
-            "genshin_nature:snowboar", "genshin_nature:azurecrane");
+            "genshin_nature:snowboar", "genshin_nature:azurecrane",
+            "genshin_nature:scarletbeakduck", "genshin_nature:emeraldduck",
+            "genshin_nature:violetibis", "genshin_nature:crow",
+            "genshin_nature:squirrel", "genshin_nature:snowweasel",
+            "genshin_nature:redtailedweasel", "genshin_nature:bootweasel",
+            "genshin_nature:adornedunagi", "genshin_nature:redfinnedunagi",
+            "genshin_nature:deepseaunagi");
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -396,6 +402,8 @@ public final class BridgeClient {
         pos.addProperty("z", player.getZ());
         data.add("position", pos);
         data.addProperty("dimension", player.level().dimension().location().toString());
+        data.addProperty("biome", player.level().getBiome(player.blockPosition()).unwrapKey()
+                .map(key -> key.location().toString()).orElse(""));
         String world = Minecraft.getInstance().getCurrentServer() == null
                 ? "singleplayer:" + (Minecraft.getInstance().getSingleplayerServer() == null ? "unknown" : Minecraft.getInstance().getSingleplayerServer().getWorldData().getLevelName())
                 : Minecraft.getInstance().getCurrentServer().ip;

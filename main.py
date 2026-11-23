@@ -49,7 +49,7 @@ from .core import ActionError, SurvivalError
 from .chat_policy import bound_history, history_budget, estimate_tokens, memory_needed, tool_group, action_intent, is_confirmation, READONLY, SURVIVAL as SURVIVAL_TOOL_NAMES, SIMPLE as SIMPLE_TOOLS
 from .telemetry import Telemetry, Trace, ToolHooks, CURRENT_TRACE, observed_context
 from .scheduler import UnifiedScheduler, Priority, TaskState, ScheduledTask
-from .skills import VanillaSkills, SkillError, parse_transfer_items
+from .skills import VanillaSkills, SkillError, parse_transfer_items, HUNTABLE, HUNT_ALIASES
 from .contracts import L0_OPCODE_NAMES, L1_SPECS, L2_SPECS
 from .task_metrics import TaskMetrics
 from .task_journal import TaskJournal
@@ -4707,7 +4707,7 @@ class McBridgePlugin(Star):
         """打猎技能：猎取牛/猪/羊/鸡/兔，拾取生肉，可回家后用熔炉烤熟。
 
         Args:
-            target(string): auto/cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane。
+            target(string): auto 或具体猎物类型（cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane/duck/ibis/crow/squirrel/weasel/unagi 等）。
             count(int): 最多猎取动物数量1-20。
             radius(int): 搜索半径4-32。
             max_seconds(int): 最长打猎时间10-600秒。
@@ -4718,9 +4718,10 @@ class McBridgePlugin(Star):
             search_rounds(int): 最多探索搜索轮数0-12。
         """
         target = str(target or "auto").strip().lower()
-        if target not in {"auto", "cow", "pig", "sheep", "chicken", "rabbit",
-                          "boar", "shroomboar", "snowboar", "azurecrane"}:
-            return "target 只能是 auto/cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane"
+        if target != "auto":
+            target = HUNT_ALIASES.get(target, target)
+            if target not in HUNTABLE:
+                return "target 只能是 auto 或具体猎物类型（cow/pig/sheep/chicken/rabbit/boar/azurecrane/duck/crow/squirrel/weasel/unagi 等）"
         if not 1 <= int(count) <= 20:
             return "打猎数量必须在1-20"
         if not 0 <= int(meat_target) <= 64:

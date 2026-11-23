@@ -166,6 +166,8 @@ FOOD_NUTRITION = {
     "genshin_nature:rawmeat": 2,
     "genshin_nature:cookedmeat": 6,
     "genshin_nature:chilledmeat": 2,
+    "genshin_nature:unagimeat": 2,
+    "genshin_nature:cookedunagimeat": 6,
 }
 RAW_FOOD_COOKING = {
     "minecraft:beef": "minecraft:cooked_beef",
@@ -179,6 +181,7 @@ RAW_FOOD_COOKING = {
     "genshin_nature:chilledmeat": "genshin_nature:rawmeat",
     "genshin_nature:rawmeat": "genshin_nature:cookedmeat",
     "genshin_nature:fowl": "genshin_nature:cookedfowl",
+    "genshin_nature:unagimeat": "genshin_nature:cookedunagimeat",
 }
 HUNTABLE = {
     "minecraft:cow": "minecraft:beef",
@@ -190,12 +193,36 @@ HUNTABLE = {
     "genshin_nature:shroomboar": "genshin_nature:rawmeat",
     "genshin_nature:snowboar": "genshin_nature:chilledmeat",
     "genshin_nature:azurecrane": "genshin_nature:fowl",
+    "genshin_nature:scarletbeakduck": "genshin_nature:fowl",
+    "genshin_nature:emeraldduck": "genshin_nature:fowl",
+    "genshin_nature:violetibis": "genshin_nature:fowl",
+    "genshin_nature:crow": "genshin_nature:fowl",
+    "genshin_nature:squirrel": "genshin_nature:rawmeat",
+    "genshin_nature:snowweasel": "genshin_nature:rawmeat",
+    "genshin_nature:redtailedweasel": "genshin_nature:rawmeat",
+    "genshin_nature:bootweasel": "genshin_nature:rawmeat",
+    "genshin_nature:adornedunagi": "genshin_nature:unagimeat",
+    "genshin_nature:redfinnedunagi": "genshin_nature:unagimeat",
+    "genshin_nature:deepseaunagi": "genshin_nature:unagimeat",
 }
 HUNT_ALIASES = {
     "cow": "minecraft:cow", "pig": "minecraft:pig", "sheep": "minecraft:sheep",
     "chicken": "minecraft:chicken", "rabbit": "minecraft:rabbit",
     "boar": "genshin_nature:boar", "shroomboar": "genshin_nature:shroomboar",
     "snowboar": "genshin_nature:snowboar", "azurecrane": "genshin_nature:azurecrane",
+    "crane": "genshin_nature:azurecrane",
+    "duck": "genshin_nature:scarletbeakduck",
+    "scarletbeakduck": "genshin_nature:scarletbeakduck",
+    "emeraldduck": "genshin_nature:emeraldduck",
+    "violetibis": "genshin_nature:violetibis", "ibis": "genshin_nature:violetibis",
+    "crow": "genshin_nature:crow", "squirrel": "genshin_nature:squirrel",
+    "snowweasel": "genshin_nature:snowweasel",
+    "redtailedweasel": "genshin_nature:redtailedweasel",
+    "bootweasel": "genshin_nature:bootweasel",
+    "unagi": "genshin_nature:adornedunagi",
+    "adornedunagi": "genshin_nature:adornedunagi",
+    "redfinnedunagi": "genshin_nature:redfinnedunagi",
+    "deepseaunagi": "genshin_nature:deepseaunagi",
 }
 DIGGABLE_GROUND = {
     "dirt", "grass_block", "podzol", "coarse_dirt", "rooted_dirt", "mud", "clay",
@@ -438,7 +465,7 @@ class VanillaSkills:
             if target != "auto":
                 target = HUNT_ALIASES.get(target, target)
                 if target not in HUNTABLE:
-                    raise SkillError("target 只能是 auto/cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane")
+                    raise SkillError("target 只能是 auto 或具体猎物类型（cow/pig/sheep/chicken/rabbit/boar/azurecrane/duck/crow/squirrel/weasel/unagi 等）")
             if not 1 <= int(normalized.get("count", 2)) <= 20:
                 raise SkillError("打猎数量必须在1-20")
             if not 4 <= int(normalized.get("radius", 24)) <= 32:
@@ -3885,13 +3912,33 @@ class VanillaSkills:
             await asyncio.sleep(0.65)
         return {"skill": "attack_target", "target": target_text, "attacked": attacked, "result": "timeout"}
 
+    async def _scan_hunt_targets(self, radius, wanted_type=""):
+        """按具体类型扫描猎物，避免通用实体上限被仙灵等无关实体占满。"""
+        types = [wanted_type] if wanted_type else list(HUNTABLE)
+        rows = []
+        seen = set()
+        for type_id in types:
+            data = await self._call(
+                "scan_entities", {"radius": radius, "limit": 32, "type": type_id}, timeout=10,
+            )
+            for row in (data.get("entities") or []):
+                if not isinstance(row, dict):
+                    continue
+                uuid = str(row.get("uuid") or "")
+                if uuid and uuid in seen:
+                    continue
+                if uuid:
+                    seen.add(uuid)
+                rows.append(row)
+        return rows
+
     async def hunt(self, target="auto", count=2, radius=24, max_seconds=180,
                    return_home=True, cook=True, meat_target=0, search=True, search_rounds=6):
         target = str(target or "auto").strip().lower()
         if target != "auto":
             target = HUNT_ALIASES.get(target, target)
             if target not in HUNTABLE:
-                raise SkillError("hunt target 只能是 auto/cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane")
+                raise SkillError("hunt target 只能是 auto 或具体猎物类型（cow/pig/sheep/chicken/rabbit/boar/azurecrane/duck/crow/squirrel/weasel/unagi 等）")
         await self._ensure_no_screen()
         requested = max(1, min(20, int(count)))
         meat_target = max(0, min(64, int(meat_target)))
@@ -3933,11 +3980,9 @@ class VanillaSkills:
             if danger:
                 errors.append("附近有敌人，停止打猎")
                 break
-            data = await self._call(
-                "scan_entities", {"radius": radius, "limit": 32}, timeout=10,
-            )
+            data = await self._scan_hunt_targets(radius, wanted_type)
             candidates = []
-            for row in (data.get("entities") or []):
+            for row in data:
                 if not isinstance(row, dict):
                     continue
                 row_type = str(row.get("type") or "")
@@ -4015,7 +4060,12 @@ class VanillaSkills:
                 await self._pickup_near(x, y, z, raw_item)
                 await asyncio.sleep(0.3)
                 await self._pickup_near(x, y, z, raw_item)
-                collected[raw_item] = self.item_count(await self.status(), raw_item)
+                status_after = await self.status()
+                collected = {
+                    item: self.item_count(status_after, item)
+                    for item in set(HUNTABLE.values())
+                    if self.item_count(status_after, item) > 0
+                }
                 raw_total = sum(collected.values())
                 self._mark("hunt", "hunting", hunted, requested, {"raw": dict(collected)})
                 if meat_target > 0 and raw_total >= meat_target:
@@ -4041,10 +4091,11 @@ class VanillaSkills:
                     cooked[cooked_item] = self.item_count(await self.status(), cooked_item)
                 except SkillError as exc:
                     errors.append(f"烹饪 {cooked_item} 失败：{exc}")
+        final_status = await self.status()
         collected = {
-            raw_item: self.item_count(await self.status(), raw_item)
-            for raw_item in HUNTABLE.values()
-            if self.item_count(await self.status(), raw_item) > 0
+            raw_item: self.item_count(final_status, raw_item)
+            for raw_item in set(HUNTABLE.values())
+            if self.item_count(final_status, raw_item) > 0
         }
         raw_total = sum(collected.values())
         cooked_total = sum(cooked.values())

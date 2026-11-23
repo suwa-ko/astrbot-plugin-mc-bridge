@@ -17,8 +17,8 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.entity.AgeableMob;
 import net.minecraft.world.entity.TamableAnimal;
-import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 
@@ -39,7 +39,9 @@ public final class BridgeClient {
     private static final BridgeClient INSTANCE = new BridgeClient();
     private static final java.util.Set<String> HUNTABLE = java.util.Set.of(
             "minecraft:cow", "minecraft:pig", "minecraft:sheep",
-            "minecraft:chicken", "minecraft:rabbit");
+            "minecraft:chicken", "minecraft:rabbit",
+            "genshin_nature:boar", "genshin_nature:shroomboar",
+            "genshin_nature:snowboar", "genshin_nature:azurecrane");
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -548,8 +550,9 @@ public final class BridgeClient {
                         player,
                         player.getBoundingBox().inflate(6.0),
                         e -> {
-                            if (!(e instanceof Animal animal) || !animal.isAlive() || animal.isBaby()) return false;
-                            if (animal instanceof TamableAnimal tame && tame.isTame()) return false;
+                            if (!(e instanceof LivingEntity living) || !living.isAlive()) return false;
+                            if (living instanceof AgeableMob ageable && ageable.isBaby()) return false;
+                            if (living instanceof TamableAnimal tame && tame.isTame()) return false;
                             String key = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
                             if (!HUNTABLE.contains(key)) return false;
                             if (!uuid.isEmpty()) return e.getUUID().toString().equals(uuid);

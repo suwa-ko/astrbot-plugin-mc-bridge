@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.2
+
+- `hunt` 支持模组动物：`genshin_nature:azurecrane`（青鹭）、`boar`（野猪）、`shroomboar`（蕈猪）、`snowboar`（雪猪）。
+- 青鹭掉 `genshin_nature:fowl`，可烧成 `cookedfowl`；野猪/蕈猪掉 `rawmeat`，烧成 `cookedmeat`；雪猪掉 `chilledmeat`，可先烧成 `rawmeat` 再烧成 `cookedmeat`。
+- `hunt` 的 Java 目标筛选放宽到白名单 `LivingEntity`，仍排除幼崽、已驯服宠物和玩家；不会攻击村民。
+- `hunt` 增加 `meat_target`（按生肉数量停）、`search` 和 `search_rounds`：附近没有猎物时按方向走 48 格再扫描，避免只在基地附近打转。
+- 实机验证补充：东/南方向 32 格内只有明亮仙灵，无原版动物；因此增加海滩/河流常见的青鹭作为肉类来源。
+
 ## 1.6.1
 
 - `farm_plot` 的 `plant`/`harvest` 现在返回 `requested`、`collected`、`partial`、`skipped` 和跳过原因；实机在 3 块不规则菜地上一次补种 14 株小麦成功，跳过 9 格会明确说明“已占用/无法接近”。

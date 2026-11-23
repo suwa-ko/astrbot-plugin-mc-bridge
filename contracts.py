@@ -321,7 +321,7 @@ L2_SPECS: dict[L2Opcode, L2Spec] = {
     L2Opcode.RETURN_HOME: L2Spec(L2Opcode.RETURN_HOME, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 1200),
     L2Opcode.TUNNEL_TO: L2Spec(L2Opcode.TUNNEL_TO, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 600),
     L2Opcode.FARM_PLOT: L2Spec(L2Opcode.FARM_PLOT, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.INVENTORY}), 600),
-    L2Opcode.HUNT: L2Spec(L2Opcode.HUNT, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.INVENTORY}), 300),
+    L2Opcode.HUNT: L2Spec(L2Opcode.HUNT, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.INVENTORY}), 600),
 }
 
 L1_OPCODE_NAMES = frozenset(opcode.value for opcode in L1Opcode)

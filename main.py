@@ -4701,32 +4701,42 @@ class McBridgePlugin(Star):
     @filter.llm_tool(name="mc_hunt")
     @require_mc_tool("mc_hunt")
     async def mc_hunt(self, event: AstrMessageEvent, target: str = "auto", count: int = 2,
-                      radius: int = 24, max_seconds: int = 180, return_home: bool = True,
-                      cook: bool = True):
+                      radius: int = 24, max_seconds: int = 300, return_home: bool = True,
+                      cook: bool = True, meat_target: int = 0, search: bool = True,
+                      search_rounds: int = 6):
         """打猎技能：猎取牛/猪/羊/鸡/兔，拾取生肉，可回家后用熔炉烤熟。
 
         Args:
-            target(string): auto/cow/pig/sheep/chicken/rabbit。
-            count(int): 目标猎物数量1-8。
+            target(string): auto/cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane。
+            count(int): 最多猎取动物数量1-20。
             radius(int): 搜索半径4-32。
-            max_seconds(int): 最长打猎时间10-300秒。
+            max_seconds(int): 最长打猎时间10-600秒。
             return_home(bool): 打猎后是否回家，默认是。
             cook(bool): 回家后是否把生肉烤熟，默认是。
+            meat_target(int): 目标生肉数量0-64；大于0时达到数量就停，不再按动物数停。
+            search(bool): 附近没有猎物时是否边探索边找，默认是。
+            search_rounds(int): 最多探索搜索轮数0-12。
         """
         target = str(target or "auto").strip().lower()
-        if target not in {"auto", "cow", "pig", "sheep", "chicken", "rabbit"}:
-            return "target 只能是 auto/cow/pig/sheep/chicken/rabbit"
-        if not 1 <= int(count) <= 8:
-            return "打猎数量必须在1-8"
+        if target not in {"auto", "cow", "pig", "sheep", "chicken", "rabbit",
+                          "boar", "shroomboar", "snowboar", "azurecrane"}:
+            return "target 只能是 auto/cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane"
+        if not 1 <= int(count) <= 20:
+            return "打猎数量必须在1-20"
+        if not 0 <= int(meat_target) <= 64:
+            return "肉类目标必须在0-64"
         if self._queue_skill(
             f"打猎{target} x{int(count)}",
             "hunt",
             target=target,
-            count=max(1, min(8, int(count))),
+            count=max(1, min(20, int(count))),
             radius=max(4, min(32, int(radius))),
-            max_seconds=max(10, min(300, int(max_seconds))),
+            max_seconds=max(10, min(600, int(max_seconds))),
             return_home=bool(return_home),
             cook=bool(cook),
+            meat_target=max(0, min(64, int(meat_target))),
+            search=bool(search),
+            search_rounds=max(0, min(12, int(search_rounds))),
         ):
             return "已加入打猎技能队列，完成后会返回猎物、生肉和熟肉数量"
         return "任务队列已满或正在停止，未执行"

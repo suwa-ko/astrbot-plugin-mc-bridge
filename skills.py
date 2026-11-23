@@ -161,6 +161,11 @@ FOOD_NUTRITION = {
     "minecraft:sweet_berries": 2,
     "minecraft:pumpkin_pie": 8,
     "minecraft:cookie": 2,
+    "genshin_nature:fowl": 2,
+    "genshin_nature:cookedfowl": 6,
+    "genshin_nature:rawmeat": 2,
+    "genshin_nature:cookedmeat": 6,
+    "genshin_nature:chilledmeat": 2,
 }
 RAW_FOOD_COOKING = {
     "minecraft:beef": "minecraft:cooked_beef",
@@ -171,6 +176,9 @@ RAW_FOOD_COOKING = {
     "minecraft:potato": "minecraft:baked_potato",
     "minecraft:cod": "minecraft:cooked_cod",
     "minecraft:salmon": "minecraft:cooked_salmon",
+    "genshin_nature:chilledmeat": "genshin_nature:rawmeat",
+    "genshin_nature:rawmeat": "genshin_nature:cookedmeat",
+    "genshin_nature:fowl": "genshin_nature:cookedfowl",
 }
 HUNTABLE = {
     "minecraft:cow": "minecraft:beef",
@@ -178,6 +186,16 @@ HUNTABLE = {
     "minecraft:sheep": "minecraft:mutton",
     "minecraft:chicken": "minecraft:chicken",
     "minecraft:rabbit": "minecraft:rabbit",
+    "genshin_nature:boar": "genshin_nature:rawmeat",
+    "genshin_nature:shroomboar": "genshin_nature:rawmeat",
+    "genshin_nature:snowboar": "genshin_nature:chilledmeat",
+    "genshin_nature:azurecrane": "genshin_nature:fowl",
+}
+HUNT_ALIASES = {
+    "cow": "minecraft:cow", "pig": "minecraft:pig", "sheep": "minecraft:sheep",
+    "chicken": "minecraft:chicken", "rabbit": "minecraft:rabbit",
+    "boar": "genshin_nature:boar", "shroomboar": "genshin_nature:shroomboar",
+    "snowboar": "genshin_nature:snowboar", "azurecrane": "genshin_nature:azurecrane",
 }
 DIGGABLE_GROUND = {
     "dirt", "grass_block", "podzol", "coarse_dirt", "rooted_dirt", "mud", "clay",
@@ -417,14 +435,20 @@ class VanillaSkills:
             normalized["crop"] = crop
         if name == "hunt":
             target = str(normalized.get("target", "auto")).strip().lower()
-            if target not in {"auto", "cow", "pig", "sheep", "chicken", "rabbit"}:
-                raise SkillError("target 只能是 auto/cow/pig/sheep/chicken/rabbit")
-            if not 1 <= int(normalized.get("count", 2)) <= 8:
-                raise SkillError("打猎数量必须在1-8")
+            if target != "auto":
+                target = HUNT_ALIASES.get(target, target)
+                if target not in HUNTABLE:
+                    raise SkillError("target 只能是 auto/cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane")
+            if not 1 <= int(normalized.get("count", 2)) <= 20:
+                raise SkillError("打猎数量必须在1-20")
             if not 4 <= int(normalized.get("radius", 24)) <= 32:
                 raise SkillError("打猎搜索半径必须在4-32")
-            if not 10 <= int(normalized.get("max_seconds", 180)) <= 300:
-                raise SkillError("打猎时限必须在10-300秒")
+            if not 10 <= int(normalized.get("max_seconds", 180)) <= 600:
+                raise SkillError("打猎时限必须在10-600秒")
+            if not 0 <= int(normalized.get("meat_target", 0)) <= 64:
+                raise SkillError("肉类目标必须在0-64")
+            if not 0 <= int(normalized.get("search_rounds", 6)) <= 12:
+                raise SkillError("搜索轮数必须在0-12")
             normalized["target"] = target
         if name == "build":
             if str(normalized.get("pattern", "line")).strip().lower() not in {"line", "wall", "floor", "pillar", "box"}:
@@ -2334,6 +2358,7 @@ class VanillaSkills:
         chosen = self._crop_name(crop or "auto")
         if chosen not in set(CROP_SPECS) | {"auto"}:
             raise SkillError("crop 只能是 auto/wheat/carrots/potatoes/beetroots")
+        await self._ensure_no_screen()
         memory = self._farm_memory()
         if operation == "list":
             return {"skill": "farm_plot", "plots": [self._farm_summary(row) for row in (memory.list() if memory else [])]}
@@ -3861,16 +3886,26 @@ class VanillaSkills:
         return {"skill": "attack_target", "target": target_text, "attacked": attacked, "result": "timeout"}
 
     async def hunt(self, target="auto", count=2, radius=24, max_seconds=180,
-                   return_home=True, cook=True):
+                   return_home=True, cook=True, meat_target=0, search=True, search_rounds=6):
         target = str(target or "auto").strip().lower()
-        if target not in {"auto", "cow", "pig", "sheep", "chicken", "rabbit"}:
-            raise SkillError("hunt target 只能是 auto/cow/pig/sheep/chicken/rabbit")
-        requested = max(1, min(8, int(count)))
+        if target != "auto":
+            target = HUNT_ALIASES.get(target, target)
+            if target not in HUNTABLE:
+                raise SkillError("hunt target 只能是 auto/cow/pig/sheep/chicken/rabbit/boar/shroomboar/snowboar/azurecrane")
+        await self._ensure_no_screen()
+        requested = max(1, min(20, int(count)))
+        meat_target = max(0, min(64, int(meat_target)))
+        search_rounds = max(0, min(12, int(search_rounds)))
         radius = max(4, min(32, int(radius)))
-        deadline = time.monotonic() + max(10, min(300, int(max_seconds)))
-        wanted_type = "" if target == "auto" else f"minecraft:{target}"
+        deadline = time.monotonic() + max(10, min(600, int(max_seconds)))
+        wanted_type = "" if target == "auto" else target
         max_approach = min(28.0, float(radius))
         failed_targets = set()
+        search_index = 0
+        search_directions = (
+            (0, 1), (1, 0), (0, -1), (-1, 0),
+            (1, 1), (-1, 1), (1, -1), (-1, -1),
+        )
         selector = getattr(self.plugin, "_select_best_weapon", None)
         if callable(selector):
             try:
@@ -3880,7 +3915,13 @@ class VanillaSkills:
         hunted = 0
         errors = []
         collected = {}
-        while hunted < requested and time.monotonic() < deadline:
+        raw_total = 0
+        while (
+            hunted < requested
+            and time.monotonic() < deadline
+            and (meat_target <= 0 or raw_total < meat_target)
+        ):
+            await self._auto_eat_if_needed()
             status = await self.status()
             if _num(status.get("health"), 20) <= 8:
                 errors.append("血量过低，停止打猎")
@@ -3912,6 +3953,30 @@ class VanillaSkills:
                     continue
                 candidates.append(row)
             if not candidates:
+                if search and search_rounds > 0 and time.monotonic() < deadline:
+                    search_rounds -= 1
+                    dx, dz = search_directions[search_index % len(search_directions)]
+                    search_index += 1
+                    status = await self.status()
+                    position = status.get("position") or {}
+                    try:
+                        x = int(float(position.get("x", 0)))
+                        y = int(float(position.get("y", 64)))
+                        z = int(float(position.get("z", 0)))
+                        await self.return_to([x + dx * 48, y, z + dz * 48], reach=4)
+                        errors.append("附近没有猎物，已向新区域搜索")
+                    except SkillError as exc:
+                        errors.append(f"搜索移动失败：{exc}")
+                        try:
+                            await self.explore(
+                                "generic", max_seconds=30, max_distance=64,
+                                return_home=False, allow_night=True,
+                            )
+                            errors.append("附近没有猎物，继续搜索")
+                        except SkillError as explore_exc:
+                            errors.append(f"搜索失败：{explore_exc}")
+                            break
+                    continue
                 if not errors:
                     errors.append("附近没有可猎取的被动动物")
                 break
@@ -3951,7 +4016,10 @@ class VanillaSkills:
                 await asyncio.sleep(0.3)
                 await self._pickup_near(x, y, z, raw_item)
                 collected[raw_item] = self.item_count(await self.status(), raw_item)
+                raw_total = sum(collected.values())
                 self._mark("hunt", "hunting", hunted, requested, {"raw": dict(collected)})
+                if meat_target > 0 and raw_total >= meat_target:
+                    break
             else:
                 await asyncio.sleep(0.45)
         returned = False
@@ -3982,7 +4050,11 @@ class VanillaSkills:
         cooked_total = sum(cooked.values())
         if hunted > 0 and raw_total == 0 and cooked_total == 0:
             errors.append("没有拾取到肉类掉落")
-        if hunted >= requested and (raw_total + cooked_total) > 0:
+        target_reached = (
+            (meat_target > 0 and raw_total >= meat_target)
+            or (meat_target <= 0 and hunted >= requested)
+        )
+        if target_reached and (raw_total + cooked_total) > 0:
             outcome = "partial" if cook and cooked_total == 0 else "fulfilled"
         elif hunted > 0 or (raw_total + cooked_total) > 0:
             outcome = "partial"
@@ -3992,9 +4064,12 @@ class VanillaSkills:
             "skill": "hunt",
             "target": target,
             "requested": requested,
+            "meat_target": meat_target,
             "hunted": hunted,
             "raw": collected,
             "cooked": cooked,
+            "raw_total": raw_total,
+            "cooked_total": cooked_total,
             "returned": returned,
             "errors": errors,
             "goal_outcome": outcome,

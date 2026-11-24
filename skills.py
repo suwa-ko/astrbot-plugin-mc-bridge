@@ -1567,31 +1567,44 @@ class VanillaSkills:
                     raise SkillError("接近熔炉失败：" + error)
         before = await self._count(item)
         furnace_pos = {"x": x, "y": y, "z": z}
-        occupied = False
-        opened = False
         try:
-            await self._call("container", {"operation": "open", **furnace_pos}, timeout=10)
-            opened = True
-            read = await self._call("container", {"operation": "read"}, timeout=10)
-            slots = {
-                int(row.get("slot", -1)): row
-                for row in (read.get("slots") or [])
-                if isinstance(row, dict) and not row.get("player_inventory")
-            }
-            output = slots.get(2) or {}
-            input_slot = slots.get(0) or {}
-            fuel_slot = slots.get(1) or {}
-            occupied = bool(input_slot.get("id") or fuel_slot.get("id") or output.get("id"))
-            if output.get("id") == item and int(output.get("count", 0) or 0) > 0:
-                await self._take_open_container(item, target)
-        except SkillError:
-            occupied = bool(opened)
-        finally:
-            if opened:
-                try:
-                    await self._call("container", {"operation": "close"}, timeout=5)
-                except Exception:
-                    pass
+            await self._call("look_at", {"x": x, "y": y, "z": z}, timeout=5)
+        except Exception:
+            pass
+        occupied = False
+        read_ok = False
+        for _attempt in range(4):
+            opened = False
+            try:
+                await self._call("container", {"operation": "open", **furnace_pos}, timeout=10)
+                opened = True
+                read = await self._call("container", {"operation": "read"}, timeout=10)
+                slots = {
+                    int(row.get("slot", -1)): row
+                    for row in (read.get("slots") or [])
+                    if isinstance(row, dict) and not row.get("player_inventory")
+                }
+                output = slots.get(2) or {}
+                input_slot = slots.get(0) or {}
+                fuel_slot = slots.get(1) or {}
+                occupied = any(
+                    str(row.get("id") or "") not in {"", "minecraft:air"}
+                    for row in (input_slot, fuel_slot, output)
+                )
+                if output.get("id") == item and int(output.get("count", 0) or 0) > 0:
+                    await self._take_open_container(item, target)
+                read_ok = True
+                break
+            except SkillError:
+                await asyncio.sleep(0.35)
+            finally:
+                if opened:
+                    try:
+                        await self._call("container", {"operation": "close"}, timeout=5)
+                    except Exception:
+                        pass
+        if not read_ok:
+            occupied = False
 
         if occupied:
             existing = max(0, await self._count(item) - before)
@@ -1604,7 +1617,10 @@ class VanillaSkills:
                     "produced": produced, "furnace": furnace_pos,
                     "note": "collected existing furnace/hopper output",
                 }
-            raise SkillError("熔炉里有未取出的材料或产物，请先清空或稍后再试")
+            raise SkillError(
+                "熔炉里有未取出的材料或产物，请先清空或稍后再试: "
+                + repr({k: (v.get("id"), v.get("count")) for k, v in slots.items() if v.get("id")})
+            )
 
         remaining = target
         error = None

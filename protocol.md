@@ -5,7 +5,7 @@ AstrBot 插件与 NeoForge 客户端 Mod 之间的 WebSocket 协议。
 ## 连接
 
 - 路径：`/ws`（可通过插件配置修改）
-- 认证：`Authorization: Bearer <token>`，或查询参数 `?token=<token>`
+- 认证：`Authorization: Bearer <token>`（默认仅允许请求头；如需兼容旧客户端 `?token=<token>`，需显式开启 `allow_query_token=true`）
 - 传输：`ws://` 或 TLS 反向代理后的 `wss://`
 - 单客户端：同一时间只接受一个 Minecraft 客户端连接
 
@@ -16,12 +16,14 @@ AstrBot 插件与 NeoForge 客户端 Mod 之间的 WebSocket 协议。
 ```json
 {
   "type": "hello",
-  "version": "0.7.0",
+  "version": "0.9.2",
   "protocol": 3,
   "player": "PlayerName",
-  "capabilities": ["status", "scan", "mine_at", "navigate", "operation", "..."]
+  "capabilities": "inventory,equip,scan,mine_block,navigate,operation,survival_events,hunt,..."
 }
 ```
+
+> 说明：Protocol 3 实际使用逗号分隔字符串表达 `capabilities`（计划在 Protocol 4 升级为 JSON 数组）。
 
 插件根据 `protocol` 和 `capabilities` 过滤工具。协议 2 的旧能力会被拒绝或降级。
 
@@ -111,6 +113,7 @@ Mod 0.8.0 / 插件 1.5.0 起，客户端还会在血量、饱食、敌人变化�
 
 | 插件 | Mod | 协议 |
 |---|---|---|
+| 1.6.x | 0.9.x | 3 |
 | 1.5.x | 0.8.x | 3 |
 | 1.1.x | 0.7.x | 3 |
 | 1.0.x | 0.6.x | 3 |

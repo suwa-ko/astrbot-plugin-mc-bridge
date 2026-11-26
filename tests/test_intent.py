@@ -96,6 +96,24 @@ class IntentTests(unittest.TestCase):
         self.assertEqual(result["params"]["item"], "minecraft:rotten_flesh")
         self.assertEqual(result["params"]["direction"], "to_container")
 
+    def test_mine_with_metal_tool_does_not_misclassify_ore(self):
+        stone = intent.classify_task("用铁镐挖32块石头")
+        self.assertEqual(stone["opcode"], "mine_ore")
+        self.assertEqual(stone["params"]["resource"], "stone")
+        self.assertEqual(stone["params"]["count"], 32)
+        coal = intent.classify_task("用钻石镐挖煤")
+        self.assertEqual(coal["opcode"], "mine_ore")
+        self.assertEqual(coal["params"]["resource"], "coal")
+
+    def test_hunt_modded_prey_aliases(self):
+        crane = intent.classify_task("去打猎3只青鹭")
+        self.assertEqual(crane["opcode"], "hunt")
+        self.assertEqual(crane["params"]["target"], "azurecrane")
+        self.assertEqual(crane["params"]["count"], 3)
+        boar = intent.classify_task("狩猎2头野猪")
+        self.assertEqual(boar["opcode"], "hunt")
+        self.assertEqual(boar["params"]["target"], "boar")
+
     def test_unknown_is_empty(self):
         result = intent.classify_task("不知道")
         self.assertEqual(result["opcode"], "")

@@ -102,6 +102,57 @@ def _item(text, exclude=()):
     return ""
 
 
+_ORE_EXPLICIT = (
+    "煤矿", "煤炭", "铁矿", "铜矿", "金矿",
+    "红石矿", "红石", "redstone",
+    "青金石矿", "青金石", "lapis",
+    "钻石矿", "钻石", "diamond",
+    "绿宝石矿", "绿宝石", "emerald",
+    "石头", "圆石", "石料", "stone",
+)
+_ORE_SHORT = ("煤", "铁", "铜", "金")
+_TOOL_SUFFIX = re.compile(r"[镐斧剑锹铲锄锭甲盔裤靴粒]")
+
+_HUNT_TARGETS = {
+    "牛": "cow", "cow": "cow",
+    "猪": "pig", "pig": "pig",
+    "羊": "sheep", "sheep": "sheep",
+    "鸡": "chicken", "chicken": "chicken",
+    "兔": "rabbit", "rabbit": "rabbit",
+    "野猪": "boar", "boar": "boar",
+    "蕈猪": "shroomboar", "shroomboar": "shroomboar",
+    "雪猪": "snowboar", "snowboar": "snowboar",
+    "青鹭": "azurecrane", "azurecrane": "azurecrane", "crane": "azurecrane",
+    "鸭": "duck", "鸭子": "duck", "duck": "duck",
+    "朱鹮": "violetibis", "ibis": "violetibis", "violetibis": "violetibis",
+    "乌鸦": "crow", "crow": "crow",
+    "松鼠": "squirrel", "squirrel": "squirrel",
+    "雪貂": "snowweasel", "snowweasel": "snowweasel",
+    "红尾鼬": "redtailedweasel", "redtailedweasel": "redtailedweasel",
+    "靴鼬": "bootweasel", "bootweasel": "bootweasel",
+    "鳗鱼": "unagi", "unagi": "unagi",
+}
+_HUNT_TARGET_RE = re.compile(
+    "(" + "|".join(sorted((re.escape(k) for k in _HUNT_TARGETS), key=len, reverse=True)) + ")"
+)
+
+
+def _match_ore(body: str) -> str:
+    for group in (_ORE_EXPLICIT, _ORE_SHORT):
+        for name in group:
+            start = 0
+            while True:
+                idx = body.find(name, start)
+                if idx < 0:
+                    break
+                end = idx + len(name)
+                if end < len(body) and _TOOL_SUFFIX.match(body[end]):
+                    start = end
+                    continue
+                return RESOURCE_ALIASES.get(name, "stone")
+    return ""
+
+
 def classify_task(text):
     original = str(text or "").strip()
     body = re.sub(r"^(?:mc|minecraft)\s*[:：]?\s*", "", original, flags=re.I).strip().lower()
@@ -111,14 +162,9 @@ def classify_task(text):
     if "沙" in body and re.search(r"挖|采|collect|mine", body):
         return _result("gather", {"resource": "sand", "count": _count(body, 32)}, 0.9, "采沙", original)
 
-    for name in (
-        "煤矿", "煤炭", "煤", "铁矿", "铁", "铜矿", "铜",
-        "金矿", "金", "红石矿", "红石", "redstone",
-        "青金石矿", "青金石", "lapis", "钻石矿", "钻石", "diamond",
-        "绿宝石矿", "绿宝石", "emerald", "石头", "圆石", "石料", "stone",
-    ):
-        if name in body and re.search(r"挖|采|矿|mine", body):
-            resource = RESOURCE_ALIASES.get(name, "stone")
+    if re.search(r"挖|采|矿|mine", body):
+        resource = _match_ore(body)
+        if resource:
             params = {"resource": resource, "count": _count(body, 8)}
             if re.search(r"回来|回家|返回|带回|拿回", body):
                 params["return_home"] = True
@@ -177,11 +223,8 @@ def classify_task(text):
             return _result("trade_for", {"item": item, "count": _count(body, 1)}, 0.72, "村民交易", original)
 
     if re.search(r"打猎|狩猎|猎取|杀牛|杀猪|杀羊|杀鸡|杀兔|hunt", body):
-        animal = re.search(r"(牛|猪|羊|鸡|兔|cow|pig|sheep|chicken|rabbit)", body)
-        target = {
-            "牛": "cow", "猪": "pig", "羊": "sheep", "鸡": "chicken", "兔": "rabbit",
-            "cow": "cow", "pig": "pig", "sheep": "sheep", "chicken": "chicken", "rabbit": "rabbit",
-        }.get(animal.group(1), "auto") if animal else "auto"
+        animal = _HUNT_TARGET_RE.search(body)
+        target = _HUNT_TARGETS.get(animal.group(1), "auto") if animal else "auto"
         return _result("hunt", {"target": target, "count": _count(body, 2)}, 0.86, "打猎", original)
 
     if re.search(r"打|杀|攻击|揍|combat|attack", body):

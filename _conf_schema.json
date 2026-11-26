@@ -22,6 +22,12 @@
     "default": "change-me",
     "hint": "必须和客户端 Mod 配置里的 token 完全一致；建议改成随机长字符串。"
   },
+  "allow_query_token": {
+    "description": "允许通过 URL 查询参数传递 token（不推荐）",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭，仅接受 Authorization: Bearer 头，避免 token 泄漏进反向代理访问日志。"
+  },
   "vision_provider_id": {
     "description": "看图使用的模型 Provider ID",
     "type": "string",

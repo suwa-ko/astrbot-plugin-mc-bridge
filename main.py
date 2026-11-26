@@ -46,7 +46,7 @@ from astrbot.core.agent.message import TextPart
 from .shared_memory import McSharedMemory, MARKER
 from .core import ActionError, SurvivalError
 
-from .chat_policy import bound_history, history_budget, estimate_tokens, memory_needed, tool_group, action_intent, is_confirmation, READONLY, SURVIVAL as SURVIVAL_TOOL_NAMES, SIMPLE as SIMPLE_TOOLS
+from .chat_policy import bound_history, history_budget, estimate_tokens, memory_needed, is_memory_question, tool_group, action_intent, is_confirmation, READONLY, SURVIVAL as SURVIVAL_TOOL_NAMES, SIMPLE as SIMPLE_TOOLS
 from .telemetry import Telemetry, Trace, ToolHooks, CURRENT_TRACE, observed_context
 from .scheduler import UnifiedScheduler, Priority, TaskState, ScheduledTask
 from .skills import VanillaSkills, SkillError, parse_transfer_items, HUNTABLE, HUNT_ALIASES
@@ -218,11 +218,13 @@ class BridgeServer:
         on_chat_overflow=None,
         chat_pending_limit=4,
         on_survival_event=None,
+        allow_query_token: bool = False,
     ) -> None:
         self.host = host
         self.port = port
         self.path = path if path.startswith("/") else "/" + path
         self.token = token
+        self.allow_query_token = bool(allow_query_token)
         self.on_chat = on_chat
         self.on_disconnect = on_disconnect
         self.on_ready = on_ready
@@ -296,11 +298,12 @@ class BridgeServer:
                 fut.set_exception(BridgeError(reason))
 
     def _check_token(self, request: web.Request) -> bool:
-        supplied = request.query.get("token", "")
-        if not supplied:
-            auth = request.headers.get("Authorization", "")
-            if auth.lower().startswith("bearer "):
-                supplied = auth[7:].strip()
+        supplied = ""
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            supplied = auth[7:].strip()
+        if not supplied and self.allow_query_token:
+            supplied = request.query.get("token", "")
         return bool(self.token) and hmac.compare_digest(str(supplied), str(self.token))
 
     async def _debug_status(self, request: web.Request) -> web.Response:
@@ -375,8 +378,6 @@ class BridgeServer:
             if not isinstance(payload,dict) or payload.get('reason') not in ('player_died','actor_replaced'):return
             callback=getattr(self,'on_respawn',None)
             if callback is not None:callback(payload)
-        elif typ=='event' and data.get('event')=='task_update':
-            pass
         elif typ == "event" and data.get("event") == "survival":
             payload = data.get("data")
             callback = self.on_survival_event
@@ -513,6 +514,7 @@ class McBridgePlugin(Star):
             on_chat_overflow=self._game_chat_overflow,
             chat_pending_limit=self.config.get("game_chat_pending_limit",4),
             on_survival_event=self._on_survival_event,
+            allow_query_token=bool(self.config.get("allow_query_token", False)),
         )
         self.bridge.on_respawn=self._respawn_signal
         self._started = False
@@ -3598,7 +3600,7 @@ class McBridgePlugin(Star):
         if self._closing:
             return "Minecraft 插件正在停止，未执行"
         text = str(event.message_str or "") if event is not None else ""
-        recall_question = bool(re.search(r'(?:记得|回忆|聊过|上次|之前|昨天|前天).{0,48}(?:吗|什么|怎么|多少|哪|是否|[?？])', text))
+        recall_question = is_memory_question(text)
         if name not in {"mc_status", "mc_look", "mc_see", "mc_screenshot", "mc_memory", "mc_brief", "mc_recall_memory", "mc_task_status", "mc_capabilities"} and event is not None and self._is_memory_query(text) and (not action_intent(text) or recall_question):
             return "本轮是回忆，不执行新的游戏动作"
         if not self.bridge.connected and name not in {"mc_stop", "mc_status", "mc_screenshot", "mc_see", "mc_memory", "mc_recall_memory"}:

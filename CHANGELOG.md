@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.7
+
+- 修复 `intent.py` 矿石关键词匹配顺序问题：「用铁镐挖石头」「用钻石镐挖煤」不再因工具名包含金属字而被误判为挖铁/挖钻石。
+- `intent.py` 打猎意图补充模组猎物别名（青鹭、野猪、蕈猪、雪猪、鸭、朱鹮、乌鸦、松鼠、雪貂、红尾鼬、靴鼬、鳗鱼）。
+- `chat_policy.py` 补齐 `打猎/狩猎/猎取/菜地/田块/开田/开垦` 动作关键词，并抽取 `is_memory_question()` 供 `main.py` 复用，修复两处正则漂移（`昨晚` 漏判）。
+- 安全加固：`BridgeServer._check_token` 默认仅接受 `Authorization: Bearer`，关闭 `?token=` 查询参数认证（新增 `allow_query_token=false` 兼容开关）；移除 `task_update` 空分支。
+- 同步更新 `README.md` 与 `protocol.md` 的 `1.6.x / 0.9.x` 兼容矩阵和 `capabilities` 说明。
+
 ## 1.6.6
 
 - 修复 `farm_plot harvest` 在密集田块和离田较远时 0 收割的问题：

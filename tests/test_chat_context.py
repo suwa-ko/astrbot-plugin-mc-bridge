@@ -66,6 +66,23 @@ class PolicyTests(unittest.TestCase):
     def test_memory_intents_do_not_require_casual_retrieval(self):
         self.assertFalse(policy.memory_needed('MinecraftBot早上好'))
         self.assertTrue(policy.memory_needed('还记得昨天在哪里采木吗'))
+        self.assertTrue(policy.is_memory_question('昨晚聊了什么'))
+
+    def test_hunt_and_farm_plot_keep_action_tools(self):
+        for text in ('去狩猎', '猎取野猪', '开垦菜地', '查看田块'):
+            group, names = policy.tool_group(text, allow_actions=True, owner=True)
+            self.assertIn(group, {'action', 'survival'})
+            self.assertIn('mc_hunt', names)
+            self.assertIn('mc_farm_plot', names)
+
+    def test_bridge_token_rejects_query_by_default(self):
+        req_query = SimpleNamespace(query={'token': 'secret'}, headers={})
+        req_bearer = SimpleNamespace(query={}, headers={'Authorization': 'Bearer secret'})
+        strict = m.BridgeServer('127.0.0.1', 8766, '/ws', 'secret')
+        self.assertFalse(strict._check_token(req_query))
+        self.assertTrue(strict._check_token(req_bearer))
+        compat = m.BridgeServer('127.0.0.1', 8766, '/ws', 'secret', allow_query_token=True)
+        self.assertTrue(compat._check_token(req_query))
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
     async def setup_agent(self,text):

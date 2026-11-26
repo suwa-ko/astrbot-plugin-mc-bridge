@@ -3,6 +3,7 @@
   "port": 8766,
   "path": "/ws",
   "token": "REPLACE_WITH_A_RANDOM_LONG_TOKEN",
+  "allow_query_token": false,
   "vision_provider_id": "your-provider/vision-model",
   "mc_provider_id": "your-provider/chat-model",
   "persona_id": "MinecraftBot",

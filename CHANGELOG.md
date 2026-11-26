@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.0
+
+- **Phase 2 模块化重构（行为零变更）**：
+  - 新增 `mc_bridge/` 核心引擎子包，将原 4,518 行的 `skills.py` 按领域拆分为 `mc_bridge/skills/`（`common`、`base`、`gathering`、`production`、`building`、`farming`、`mining`、`survival_ops`），根目录 `skills.py` 保留为 100% 兼容 Facade。
+  - 从 `main.py` 剥离 `mc_bridge/context.py`、`mc_bridge/server.py`（`BridgeServer` / `QueuedTask` / `classify_goal_outcome`）与 `mc_bridge/runtime.py`（`RuntimeMixin` 任务调度、计划执行、恢复与破坏保护），`main.py` 瘦身超过 2,000 行。
+  - 新增 `mc_bridge/async_memory.py`（`AsyncMemoryStore`），通过 `asyncio.to_thread` 封装 SQLite 读写，为后续 Coach 与 MCP Server 提供非阻塞记忆访问。
+
 ## 1.6.7
 
 - 修复 `intent.py` 矿石关键词匹配顺序问题：「用铁镐挖石头」「用钻石镐挖煤」不再因工具名包含金属字而被误判为挖铁/挖钻石。

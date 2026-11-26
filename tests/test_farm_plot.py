@@ -118,6 +118,7 @@ class FarmPlotSkillTests(unittest.IsolatedAsyncioTestCase):
                 {"id": "minecraft:potato", "count": 6, "slot": 0},
                 {"id": "minecraft:wheat_seeds", "count": 6, "slot": 1},
             ]
+            plugin.position = {"x": 1.5, "y": 64, "z": 1.5}
 
             async def inspect(action, params=None, timeout=10):
                 if action == "inspect_block":
@@ -143,6 +144,165 @@ class FarmPlotSkillTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("minecraft:potato", plant_items)
             self.assertIn("minecraft:wheat_seeds", plant_items)
 
+    async def test_harvest_moves_into_plot_before_inspecting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plugin = self._plugin(folder)
+            memory = plugin._farm_memory_for()
+            memory.upsert({
+                "id": "farm-1",
+                "cells": [{"x": 0, "y": 63, "z": 0, "crop": "wheat"}],
+            })
+            plugin.inventory = [{"id": "minecraft:wheat_seeds", "count": 4, "slot": 0}]
+            plugin.position = {"x": 20.0, "y": 64, "z": 0.5}
+            plugin.bed_context = {
+                "stands": [{"x": 0, "y": 64, "z": 1, "feet_y": 64, "distance": 2.0}],
+            }
+
+            async def call(action, params=None, timeout=10):
+                if action == "inspect_block":
+                    if abs(plugin.position["x"] - 0.5) > 16:
+                        raise RuntimeError("OUT_OF_RANGE")
+                    return {
+                        "block": "minecraft:wheat",
+                        "state": "Block{minecraft:wheat}[age=7]",
+                    }
+                return await FakePlugin._call(plugin, action, params, timeout)
+
+            async def approach(x, y, z, seconds=20, reach=4.0, allow_break=False):
+                plugin.approaches.append((x, y, z, reach))
+                plugin.position = {"x": 1.5, "y": 64, "z": 1.5}
+                return None
+
+            async def run(action, params, seconds=10):
+                plugin.runs.append((action, dict(params)))
+                return {"phase": "completed", "success": True}
+
+            plugin._call = call
+            plugin._approach_target = approach
+            plugin._run_operation = run
+            result = await skills_mod.VanillaSkills(plugin).farm_plot(
+                "harvest", plot="farm-1", count=1, replant=True,
+            )
+            self.assertEqual(result["harvested"], 1)
+            self.assertTrue(plugin.approaches)
+            self.assertEqual(plugin.approaches[0][:3], (0, 64, 1))
+
+    async def test_plant_counts_crop_confirmed_after_action_timeout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plugin = self._plugin(folder)
+            plugin.inventory = [{"id": "minecraft:wheat_seeds", "count": 4, "slot": 0}]
+            plugin.inspect_extra[(0, 64, 0)] = {
+                "block": "minecraft:wheat", "state": "Block{minecraft:wheat}[age=0]",
+            }
+
+            async def run(action, params, seconds=10):
+                raise RuntimeError("plant space is occupied")
+
+            plugin._run_operation = run
+            ok = await skills_mod.VanillaSkills(plugin)._plant_crop(
+                0, 63, 0, "minecraft:wheat_seeds",
+            )
+            self.assertTrue(ok)
+
+    async def test_harvest_approaches_farmland_stand_at_air_level(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plugin = self._plugin(folder)
+            memory = plugin._farm_memory_for()
+            memory.upsert({
+                "id": "farm-1",
+                "cells": [{"x": 0, "y": 63, "z": 0, "crop": "wheat"}],
+            })
+            plugin.inventory = [{"id": "minecraft:wheat_seeds", "count": 4, "slot": 0}]
+            plugin.inspect_extra[(0, 64, 0)] = {
+                "block": "minecraft:wheat", "state": "Block{minecraft:wheat}[age=7]",
+            }
+            plugin.position = {"x": 5.0, "y": 64, "z": 0.5}
+            plugin.bed_context = {
+                "stands": [{
+                    "x": 0, "y": 63, "z": 1, "feet_y": 63.9375, "distance": 1.0,
+                }],
+            }
+
+            async def approach(x, y, z, seconds=20, reach=4.0, allow_break=False):
+                plugin.approaches.append((x, y, z, reach))
+                plugin.position = {"x": 1.5, "y": 64, "z": 1.5}
+                return None
+
+            async def run(action, params, seconds=10):
+                plugin.runs.append((action, dict(params)))
+                return {"phase": "completed", "success": True}
+
+            plugin._approach_target = approach
+            plugin._run_operation = run
+            result = await skills_mod.VanillaSkills(plugin).farm_plot(
+                "harvest", plot="farm-1", count=1, replant=True,
+            )
+            self.assertEqual(result["harvested"], 1)
+            self.assertEqual(plugin.approaches[0][1], 64)
+
+    async def test_harvest_skips_navigation_when_already_in_reach(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plugin = self._plugin(folder)
+            memory = plugin._farm_memory_for()
+            memory.upsert({
+                "id": "farm-1",
+                "cells": [{"x": 0, "y": 63, "z": 0, "crop": "wheat"}],
+            })
+            plugin.inventory = [{"id": "minecraft:wheat_seeds", "count": 4, "slot": 0}]
+            plugin.inspect_extra[(0, 64, 0)] = {
+                "block": "minecraft:wheat", "state": "Block{minecraft:wheat}[age=7]",
+            }
+            plugin.position = {"x": 1.5, "y": 64, "z": 0.5}
+
+            async def run(action, params, seconds=10):
+                plugin.runs.append((action, dict(params)))
+                return {"phase": "completed", "success": True}
+
+            plugin._run_operation = run
+            result = await skills_mod.VanillaSkills(plugin).farm_plot(
+                "harvest", plot="farm-1", count=1, replant=True,
+            )
+            self.assertEqual(result["harvested"], 1)
+            self.assertEqual(result["planted"], 1)
+            self.assertFalse(plugin.approaches)
+
+    async def test_harvest_uses_partial_approach_when_navigation_reports_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plugin = self._plugin(folder)
+            memory = plugin._farm_memory_for()
+            memory.upsert({
+                "id": "farm-1",
+                "cells": [{"x": 0, "y": 63, "z": 0, "crop": "wheat"}],
+            })
+            plugin.inventory = [{"id": "minecraft:wheat_seeds", "count": 4, "slot": 0}]
+            plugin.inspect_extra[(0, 64, 0)] = {
+                "block": "minecraft:wheat", "state": "Block{minecraft:wheat}[age=7]",
+            }
+            plugin.position = {"x": 5.0, "y": 64, "z": 0.5}
+            plugin.bed_context = {
+                "stands": [{"x": 0, "y": 64, "z": 1, "feet_y": 64, "distance": 1.0}],
+            }
+
+            async def approach(x, y, z, seconds=20, reach=4.0, allow_break=False):
+                plugin.approaches.append((x, y, z, reach))
+                # The client reports a navigation failure after getting close.
+                plugin.position = {"x": 1.5, "y": 64, "z": 1.5}
+                return "靠近目标无进展，已停止"
+
+            async def run(action, params, seconds=10):
+                plugin.runs.append((action, dict(params)))
+                return {"phase": "completed", "success": True}
+
+            plugin._approach_target = approach
+            plugin._run_operation = run
+            result = await skills_mod.VanillaSkills(plugin).farm_plot(
+                "harvest", plot="farm-1", count=1, replant=True,
+            )
+            self.assertEqual(result["harvested"], 1)
+            self.assertEqual(result["planted"], 1)
+            self.assertTrue(plugin.approaches)
+            self.assertGreater(plugin.approaches[0][3], 1.0)
+
     async def test_plant_reports_skipped_and_partial(self):
         with tempfile.TemporaryDirectory() as folder:
             plugin = self._plugin(folder)
@@ -155,6 +315,7 @@ class FarmPlotSkillTests(unittest.IsolatedAsyncioTestCase):
                 ],
             })
             plugin.inventory = [{"id": "minecraft:wheat_seeds", "count": 8, "slot": 0}]
+            plugin.position = {"x": 1.6, "y": 64, "z": 1.6}
 
             async def inspect(action, params=None, timeout=10):
                 if action == "inspect_block":

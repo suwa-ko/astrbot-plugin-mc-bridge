@@ -1888,11 +1888,24 @@ class VanillaSkills:
 
     async def _plant_crop(self, x, y, z, seed):
         if not seed or await self._count(seed) <= 0:
+            self._last_plant_error = "没有可用种子"
             return False
         try:
             await self._run("plant", {"x": int(x), "y": int(y), "z": int(z), "item": seed}, seconds=6)
+            self._last_plant_error = ""
             return True
-        except Exception:
+        except Exception as exc:
+            self._last_plant_error = str(exc).strip() or type(exc).__name__
+            # The server may confirm the crop just after the action timeout.
+            try:
+                above = await self._call(
+                    "inspect_block", {"x": int(x), "y": int(y) + 1, "z": int(z)}, timeout=6,
+                )
+                if CROP_BLOCKS.get(self._block_id(above.get("block"))):
+                    self._last_plant_error = ""
+                    return True
+            except Exception:
+                pass
             return False
 
     async def farm(self, operation="harvest", radius=8, count=8, replant=True, crop="auto"):
@@ -2057,6 +2070,13 @@ class VanillaSkills:
                 break
         return found
 
+    @staticmethod
+    def _farm_stand_goal(row, default_y):
+        try:
+            return int(math.ceil(float(row.get("feet_y", row.get("y", default_y)))))
+        except (TypeError, ValueError):
+            return int(default_y)
+
     async def _approach_farm_cell(self, x, y, z, avoid_column=False):
         try:
             context = await self._call("block_context", {"x": int(x), "y": int(y), "z": int(z)}, timeout=8)
@@ -2068,28 +2088,54 @@ class VanillaSkills:
                 row for row in stands
                 if (int(row.get("x", 0)), int(row.get("z", 0))) != (int(x), int(z))
             ]
+            stands.sort(key=lambda row: (
+                0 if abs(_num(row.get("feet_y"), y) - float(y)) <= 0.6 else 1,
+                _num(row.get("distance"), 999),
+            ))
+            for stand in stands[:3]:
+                error = await self.plugin._approach_target(
+                    stand["x"], self._farm_stand_goal(stand, y), stand["z"],
+                    seconds=10, reach=1.2,
+                )
+                if error:
+                    continue
+                try:
+                    await self._run(
+                        "align",
+                        {"x": stand["x"], "y": stand.get("feet_y", stand.get("y", y)),
+                         "z": stand["z"]},
+                        seconds=4,
+                    )
+                except Exception:
+                    pass
+                status = await self.status()
+                position = status.get("position") or {}
+                try:
+                    feet = (math.floor(float(position["x"])), math.floor(float(position["z"])))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if feet == (int(x), int(z)):
+                    continue
+                if await self._farm_mine_ready(x, y, z, require_visible=True):
+                    return True
+            error = await self.plugin._approach_target(int(x), int(y), int(z), seconds=10, reach=2.5)
+            if error:
+                return False
+            return await self._farm_mine_ready(x, y, z)
         if stands:
-            stand = min(stands, key=lambda row: _num(row.get("distance"), 999))
+            stands.sort(key=lambda row: _num(row.get("distance"), 999))
+            stand = stands[0]
             error = await self.plugin._approach_target(
                 stand["x"], stand.get("feet_y", stand.get("y", y)), stand["z"],
-                seconds=10, reach=0.5 if avoid_column else 1.5,
+                seconds=10, reach=1.5,
             )
             if error:
                 return False
-        elif not avoid_column and _num(context.get("distance"), 0) <= 4.0:
+        elif _num(context.get("distance"), 0) <= 4.0:
             return True
         else:
             error = await self.plugin._approach_target(int(x), int(y), int(z), seconds=10, reach=2.5)
             if error:
-                return False
-        if avoid_column:
-            status = await self.status()
-            position = status.get("position") or {}
-            try:
-                feet = (math.floor(float(position["x"])), math.floor(float(position["z"])))
-            except (KeyError, TypeError, ValueError):
-                return False
-            if feet == (int(x), int(z)):
                 return False
         return True
 
@@ -2114,11 +2160,143 @@ class VanillaSkills:
         mature = age is not None and age >= int(CROP_SPECS[crop]["age"])
         return {"empty": False, "crop": crop, "age": age, "mature": mature}
 
+    async def _farm_mine_ready(self, x, y, z, reach=2.6, require_visible=False):
+        """True when the block can be mined from the current feet position."""
+        status = await self.status()
+        position = status.get("position") or {}
+        try:
+            px, py, pz = float(position["x"]), float(position["y"]), float(position["z"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if (math.floor(px), math.floor(pz)) == (int(x), int(z)):
+            return False
+        eye = (px, py + 1.62, pz)
+        center = (float(x) + 0.5, float(y) + 0.5, float(z) + 0.5)
+        if math.dist(eye, center) > reach:
+            return False
+        # Mirror the client's load-bearing rule: reject when the player's
+        # bounding box overlaps the block's own column, not only its center.
+        overlaps = (
+            int(x) < px + 0.45 and int(x) + 1 > px - 0.45
+            and int(z) < pz + 0.45 and int(z) + 1 > pz - 0.45
+            and int(y) < py + 0.1 and int(y) + 1 > py - 0.25
+        )
+        if overlaps:
+            return False
+        if require_visible:
+            try:
+                probe = await self._call(
+                    "inspect_block", {"x": int(x), "y": int(y), "z": int(z)}, timeout=6,
+                )
+                if probe.get("interactable") is False:
+                    return False
+            except Exception:
+                return False
+        return True
+
+    async def _farm_plant_ready(self, x, y, z, reach=4.0):
+        """True when the farmland top can be used from the current position."""
+        status = await self.status()
+        position = status.get("position") or {}
+        try:
+            px, py, pz = float(position["x"]), float(position["y"]), float(position["z"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        eye = (px, py + 1.62, pz)
+        target = (float(x) + 0.5, float(y) + 1.0, float(z) + 0.5)
+        if math.dist(eye, target) > reach:
+            return False
+        crop_y = int(y) + 1
+        overlaps = (
+            int(x) < px + 0.45 and int(x) + 1 > px - 0.45
+            and int(z) < pz + 0.45 and int(z) + 1 > pz - 0.45
+            and crop_y < py + 0.1 and crop_y + 1 > py - 0.25
+        )
+        return not overlaps
+
+    async def _approach_farm_plant(self, x, y, z):
+        try:
+            context = await self._call("block_context", {"x": int(x), "y": int(y), "z": int(z)}, timeout=8)
+        except Exception:
+            return False
+        stands = [row for row in (context.get("stands") or []) if isinstance(row, dict)]
+        stands.sort(key=lambda row: (
+            0 if abs(_num(row.get("feet_y"), y + 1) - float(y + 1)) <= 0.6 else 1,
+            _num(row.get("distance"), 999),
+        ))
+        for stand in stands[:3]:
+            error = await self.plugin._approach_target(
+                stand["x"], self._farm_stand_goal(stand, y), stand["z"],
+                seconds=10, reach=1.5,
+            )
+            if error:
+                continue
+            try:
+                await self._run(
+                    "align",
+                    {"x": stand["x"], "y": stand.get("feet_y", stand.get("y", y)),
+                     "z": stand["z"]},
+                    seconds=4,
+                )
+            except Exception:
+                pass
+            if await self._farm_plant_ready(x, y, z):
+                return True
+        error = await self.plugin._approach_target(int(x), int(y), int(z), seconds=10, reach=2.5)
+        if error:
+            return False
+        return await self._farm_plant_ready(x, y, z)
+
+    async def _farm_visit_cells(self, cells, avoid_column=False, plant=False):
+        """Move into the plot so cell inspection is within client reach."""
+        if not cells:
+            return False
+        status = await self.status()
+        position = status.get("position") or {}
+        try:
+            px, py, pz = float(position["x"]), float(position["y"]), float(position["z"])
+        except (KeyError, TypeError, ValueError):
+            px = py = pz = 0.0
+
+        def distance(cell):
+            try:
+                return (
+                    (float(cell["x"]) + 0.5 - px) ** 2
+                    + (float(cell["y"]) + 0.5 - py) ** 2
+                    + (float(cell["z"]) + 0.5 - pz) ** 2
+                ) ** 0.5
+            except (KeyError, TypeError, ValueError):
+                return 999.0
+
+        ordered = sorted(cells, key=distance)
+        if ordered:
+            first = ordered[0]
+            try:
+                fx, fy, fz = int(first["x"]), int(first["y"]), int(first["z"])
+                if plant:
+                    if await self._farm_plant_ready(fx, fy, fz):
+                        return True
+                elif await self._farm_mine_ready(fx, fy + 1, fz):
+                    return True
+            except (KeyError, TypeError, ValueError):
+                pass
+        for cell in ordered[:3]:
+            x, y, z = int(cell["x"]), int(cell["y"]), int(cell["z"])
+            if plant:
+                if await self._approach_farm_plant(x, y, z):
+                    return True
+                continue
+            target_y = y + 1 if avoid_column else y
+            if await self._approach_farm_cell(x, target_y, z, avoid_column=avoid_column):
+                return True
+        return False
+
     async def _farm_harvest_cells(self, cells, count, replant=True):
         harvested = {}
         planted = {}
         reasons = []
         target = max(1, min(256, int(count)))
+        await self._farm_visit_cells(cells, avoid_column=True)
         for cell in cells:
             if sum(harvested.values()) >= target:
                 break
@@ -2132,27 +2310,43 @@ class VanillaSkills:
                 reasons.append(label + " 未成熟")
                 continue
             x, y, z = int(cell["x"]), int(cell["y"]), int(cell["z"])
-            if not await self._approach_farm_cell(x, y + 1, z, avoid_column=True):
+            ready = await self._farm_mine_ready(x, y + 1, z, require_visible=True)
+            if not ready:
+                await self._approach_farm_cell(x, y + 1, z, avoid_column=True)
+                # Navigation may fail in a dense field; harvest from the
+                # current tile when it is already within interaction reach.
+                ready = await self._farm_mine_ready(x, y + 1, z, require_visible=True)
+            if not ready:
                 reasons.append(label + " 无法站到旁边")
                 continue
             spec = CROP_SPECS[crop]
             try:
                 await self._run("mine_at", {"x": x, "y": y + 1, "z": z}, seconds=10)
                 await self._pickup_near(x, y + 1, z, spec["item"])
+                await self._pickup_near(x, y + 1, z, spec["seed"])
                 harvested[crop] = harvested.get(crop, 0) + 1
                 if replant:
+                    # Replant needs a tighter, face-on position than mining.
+                    if not await self._farm_plant_ready(x, y, z):
+                        await self._approach_farm_plant(x, y, z)
+                    replanted = False
                     for attempt in range(3):
                         if await self._plant_crop(x, y, z, spec["seed"]):
                             planted[crop] = planted.get(crop, 0) + 1
+                            replanted = True
                             break
                         await asyncio.sleep(0.25)
+                    if not replanted:
+                        detail = str(getattr(self, "_last_plant_error", "") or "未确认").strip()
+                        reasons.append(label + " 补种未确认：" + detail[:60])
                 self._mark(
                     "farm_plot", "harvesting",
                     sum(harvested.values()) + sum(planted.values()),
                     target * 2, {"harvested": dict(harvested), "planted": dict(planted)},
                 )
             except Exception as exc:
-                reasons.append(label + " 收割失败：" + type(exc).__name__)
+                detail = str(exc).strip() or type(exc).__name__
+                reasons.append(label + " 收割失败：" + detail[:80])
                 continue
         return harvested, planted, reasons
 
@@ -2162,6 +2356,7 @@ class VanillaSkills:
         skipped = 0
         reasons = []
         target = max(1, min(256, int(count)))
+        await self._farm_visit_cells(cells, plant=True)
         for cell in cells:
             if sum(planted.values()) >= target:
                 break
@@ -2183,10 +2378,11 @@ class VanillaSkills:
                 reasons.append("没有可用种子")
                 break
             x, y, z = int(cell["x"]), int(cell["y"]), int(cell["z"])
-            if not await self._approach_farm_cell(x, y, z):
-                skipped += 1
-                reasons.append("无法接近格子")
-                continue
+            if not await self._farm_plant_ready(x, y, z):
+                if not await self._approach_farm_plant(x, y, z):
+                    skipped += 1
+                    reasons.append("无法接近格子")
+                    continue
             planted_ok = False
             for attempt in range(3):
                 if await self._plant_crop(x, y, z, CROP_SPECS[crop_name]["seed"]):
@@ -2197,7 +2393,8 @@ class VanillaSkills:
                 planted[crop_name] = planted.get(crop_name, 0) + 1
             else:
                 skipped += 1
-                reasons.append("种植未确认")
+                detail = str(getattr(self, "_last_plant_error", "") or "未确认").strip()
+                reasons.append("种植未确认：" + detail[:60])
         return planted, skipped, reasons
 
     async def _farm_discover(self, radius=12, plot_hint=""):

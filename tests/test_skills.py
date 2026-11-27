@@ -493,6 +493,92 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(plugin.digs)
         self.assertEqual(plugin.position["y"], 12)
 
+    async def test_dig_to_layer_aligns_offcenter_and_rejects_high_timeout(self):
+        class TimeoutPlugin(FakePlugin):
+            def __init__(self):
+                super().__init__()
+                self.position = {"x": -378.3, "y": 87.0, "z": -159.2}
+
+            async def _call(self, action, params=None, timeout=10):
+                if action == "block_context":
+                    return {"block": "minecraft:stone", "standable": False}
+                if action == "scan":
+                    return {"resources": [], "ground": []}
+                return await super()._call(action, params, timeout)
+
+            async def _run_operation(self, action, params, seconds=10):
+                await super()._run_operation(action, params, seconds)
+                if action == "align":
+                    self.position["x"] = int(params["x"]) + 0.5
+                    self.position["z"] = int(params["z"]) + 0.5
+                    return {"phase": "completed", "success": True}
+                if action == "dig_down":
+                    raise skills_mod.SkillError("action timed out; completion not confirmed")
+                return {"phase": "completed", "success": True}
+
+            async def _approach_target(self, x, y, z, seconds=20, reach=4.0, allow_break=False):
+                return "blocked"
+
+        plugin = TimeoutPlugin()
+        with self.assertRaisesRegex(skills_mod.SkillError, "向下挖掘受阻"):
+            await skills_mod.VanillaSkills(plugin)._dig_to_layer(-54, time.monotonic() + 30)
+        self.assertTrue(any(act == "align" for act, _ in plugin.runs))
+
+    async def test_mine_ore_branch_tunnels_at_diamond_layer(self):
+        class BranchPlugin(FakePlugin):
+            def __init__(self):
+                super().__init__()
+                self.position = {"x": 0.5, "y": -54.0, "z": 0.5}
+                self.diamonds = 0
+                self.pickaxe = {
+                    "id": "minecraft:iron_pickaxe", "count": 1, "slot": 0,
+                    "damage": 0, "max_damage": 250,
+                }
+
+            async def _call(self, action, params=None, timeout=10):
+                if action == "status":
+                    data = await super()._call(action, params, timeout)
+                    data["position"] = dict(self.position)
+                    data["inventory_items"] = [dict(self.pickaxe)] + (
+                        [{"id": "minecraft:diamond", "count": self.diamonds, "slot": 5}]
+                        if self.diamonds else []
+                    )
+                    return data
+                if action == "block_context":
+                    return {"block": "minecraft:deepslate", "standable": False}
+                if action == "scan":
+                    return {"resources": [], "ground": []}
+                if action == "scan_blocks":
+                    # Diamonds only appear at (10, -54, 0) once the branch tunnel reaches x >= 6.
+                    if self.position["x"] >= 6 and self.diamonds < 4:
+                        return {"blocks": [{
+                            "x": 10,
+                            "y": -54,
+                            "z": 0,
+                            "block": "minecraft:deepslate_diamond_ore",
+                            "distance": 1.0,
+                        }]}
+                    return {"blocks": []}
+                return await super()._call(action, params, timeout)
+
+            async def _run_operation(self, action, params, seconds=10):
+                await super()._run_operation(action, params, seconds)
+                if action == "mine_at" and int(params.get("x", 0)) == 10 and int(params.get("y", 0)) == -54:
+                    self.diamonds += 4
+                return {"phase": "completed", "success": True}
+
+            async def _approach_target(self, x, y, z, seconds=20, reach=4.0, allow_break=False):
+                self.position["x"] = float(x) + 0.5
+                self.position["y"] = float(y)
+                self.position["z"] = float(z) + 0.5
+                return None
+
+        plugin = BranchPlugin()
+        result = await skills_mod.VanillaSkills(plugin).mine_ore("diamond", 4)
+        self.assertEqual(result["skill"], "mine_ore")
+        self.assertEqual(result["collected"], 4)
+        self.assertGreaterEqual(plugin.position["x"], 6.0)
+
     async def test_smelt_without_furnace_attempts_crafting(self):
         skills = skills_mod.VanillaSkills(FakePlugin())
         with self.assertRaises(skills_mod.SkillError):

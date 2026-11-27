@@ -314,11 +314,29 @@ class MiningAndNavMixin:
         # scan nearby natural ground at any reachable Y excluding the blocked column.
         return await self._move_to_dig_site(exclude_near=(x, z))
 
+    async def _align_over_cell(self, x: int, y: int, z: int, status: dict | None = None) -> None:
+        """Center the player over (x+0.5, z+0.5) so dig_down cannot snag on a block edge."""
+        pos = (status or {}).get("position") or {}
+        try:
+            fx = float(pos.get("x", x + 0.5))
+            fz = float(pos.get("z", z + 0.5))
+        except (TypeError, ValueError):
+            return
+        if abs(fx - (x + 0.5)) <= 0.15 and abs(fz - (z + 0.5)) <= 0.15:
+            return
+        try:
+            await self._run("align", {"x": int(x), "y": int(y), "z": int(z)}, seconds=4)
+        except Exception:
+            pass
+
     async def _dig_to_layer(self, target_y, deadline, step=8):
         """Dig a safe 1x1 shaft down toward a target Y, relocating laterally around voids."""
         digs = 0
         relocations = 0
         target_y = int(target_y)
+        cave_errors = ("air or fluid", "no safe floor", "fluid", "unbreakable")
+        reloc_errors = ("no safe floor", "falling", "不在可破坏类别", "air or fluid", "fluid", "timed out", "did not descend", "超时")
+        hard_errors = ("不在可破坏类别", "not standing safely", "no safe floor", "falling", "not visible", "protected", "did not confirm", "no suitable tool", "outside the loaded world", "timed out", "did not descend", "超时", "air or fluid", "fluid", "unbreakable")
         while True:
             if time.monotonic() >= deadline:
                 raise SkillError("向下挖掘到矿层超时")
@@ -332,6 +350,7 @@ class MiningAndNavMixin:
                 raise SkillError("当前位置不可用，无法向下挖掘")
             if y <= target_y + 2:
                 return digs
+            await self._align_over_cell(x, y, z, status=status)
             depth = max(1, min(int(step), y - target_y))
             try:
                 await self._run("dig_down", {"depth": depth}, seconds=80)
@@ -347,19 +366,33 @@ class MiningAndNavMixin:
                         text = str(retry_exc)
                     else:
                         text = ""
-                if text and any(w in text for w in ("no safe floor", "falling", "不在可破坏类别")) and relocations < 5:
-                    relocations += 1
-                    if await self._relocate_shaft(x, y, z):
-                        continue
-                if text and any(
-                    word in text for word in (
-                        "不在可破坏类别", "not standing safely",
-                        "no safe floor", "falling", "not visible",
-                    )
-                ):
-                    raise SkillError("向下挖掘受阻：" + text)
-                # A cave or fluid stops the shaft; scan from this depth.
-                return digs
+                if text:
+                    after = await self.status()
+                    after_pos = after.get("position") or {}
+                    try:
+                        after_x = int(math.floor(float(after_pos.get("x", x))))
+                        after_y = int(math.floor(float(after_pos.get("y", y))))
+                        after_z = int(math.floor(float(after_pos.get("z", z))))
+                    except (TypeError, ValueError):
+                        after_x, after_y, after_z = x, y, z
+                    if after_y < y:
+                        digs += y - after_y
+                        x, y, z = after_x, after_y, after_z
+                        if y <= target_y + 2:
+                            return digs
+                    lower = text.lower()
+                    if y <= target_y + 16 and any(w in lower for w in cave_errors):
+                        # Near the target ore layer, a cave/fluid or bedrock ends the shaft.
+                        return digs
+                    if any(w in lower for w in reloc_errors) and relocations < 5:
+                        if after_y < y and any(w in lower for w in ("timed out", "did not descend", "超时")):
+                            continue
+                        relocations += 1
+                        if await self._relocate_shaft(x, y, z):
+                            continue
+                    if y > target_y + 16 or any(w in lower for w in hard_errors):
+                        raise SkillError("向下挖掘受阻：" + text)
+                    return digs
             after = await self.status()
             after_position = after.get("position") or {}
             try:
@@ -369,6 +402,66 @@ class MiningAndNavMixin:
             if after_y >= y:
                 raise SkillError("向下挖掘没有进展")
             digs += y - after_y
+
+    async def _gather_deep_branches(self, resource, target, radius, deadline, allow_night, baseline):
+        """Collect deep ore at target depth, branch-tunneling if local scans come up short."""
+        directions = ((1, 0), (0, 1), (-1, 0), (0, -1))
+        dir_idx = 0
+        last_result = None
+        last_error = None
+        collect_radius = max(int(radius), 16)
+        for _ in range(16):
+            gained = self.item_count(await self.status(), resource) - baseline
+            if gained >= target:
+                res = dict(last_result or {})
+                res.update({"skill": "gather", "resource": resource, "requested": target, "collected": gained, "partial": False})
+                return res
+            if time.monotonic() + 15 >= deadline:
+                break
+            if not await self._ensure_pickaxe(40):
+                last_error = SkillError("没有耐久足够的镐，无法继续深层采矿")
+                break
+            await self._auto_eat_if_needed()
+            remaining = int(max(20, min(180, deadline - time.monotonic())))
+            try:
+                step_res = await self.gather(
+                    resource, max(1, target - gained), radius=collect_radius,
+                    max_seconds=remaining, allow_night=allow_night,
+                )
+                last_result = step_res
+                last_error = None
+                gained = self.item_count(await self.status(), resource) - baseline
+                if gained >= target or not (isinstance(step_res, dict) and step_res.get("partial")):
+                    res = dict(step_res or {})
+                    res.update({"skill": "gather", "resource": resource, "requested": target, "collected": gained})
+                    return res
+            except SkillError as exc:
+                last_error = exc
+                if not any(w in str(exc) for w in ("没有可采集", "不可采集", "掉落物")):
+                    break
+            if time.monotonic() + 25 >= deadline:
+                break
+            moved = False
+            for offset in range(4):
+                cand = (dir_idx + offset) % 4
+                dx, dz = directions[cand]
+                if await self._step_horizontal_tunnel(dx, dz, steps=8):
+                    dir_idx = cand
+                    moved = True
+                    break
+            if not moved:
+                break
+        gained = self.item_count(await self.status(), resource) - baseline
+        if gained > 0:
+            return {
+                "skill": "gather",
+                "resource": resource,
+                "requested": target,
+                "collected": gained,
+                "partial": gained < target,
+                "reason": str(last_error) if last_error else "已尽力支线掘进采集",
+            }
+        raise last_error or SkillError("附近没有可采集的目标")
 
     async def mine_ore(self, resource="coal", count=8, radius=12, max_seconds=1200, allow_night=False, return_home=False):
         resource = RESOURCE_ALIASES.get(str(resource or "").strip().lower(), str(resource or "").strip().lower())
@@ -385,6 +478,7 @@ class MiningAndNavMixin:
         error = None
         layer = DEEP_ORE_LAYERS.get(resource)
         status = await self.status()
+        baseline = self.item_count(status, resource)
         position = status.get("position") or {}
         try:
             current_y = int(math.floor(float(position.get("y", 0))))
@@ -400,20 +494,23 @@ class MiningAndNavMixin:
             self._mark("mine_ore", "descending", 0, target, {"resource": resource, "target_y": layer})
             await self._dig_to_layer(layer, deadline)
             await self._auto_eat_if_needed()
-            remaining = int(max(20, deadline - time.monotonic()))
             try:
-                result = await self.gather(
-                    resource, target, radius=radius,
-                    max_seconds=remaining, allow_night=allow_night,
+                result = await self._gather_deep_branches(
+                    resource, target, radius, deadline, allow_night, baseline,
                 )
             except SkillError as exc:
                 error = exc
         else:
             try:
-                result = await self.gather(
-                    resource, target, radius=radius,
-                    max_seconds=min(120, max_seconds), allow_night=allow_night,
-                )
+                if layer is not None:
+                    result = await self._gather_deep_branches(
+                        resource, target, radius, deadline, allow_night, baseline,
+                    )
+                else:
+                    result = await self.gather(
+                        resource, target, radius=radius,
+                        max_seconds=min(120, max_seconds), allow_night=allow_night,
+                    )
             except SkillError as exc:
                 error = exc
                 if layer is None or not any(word in str(exc) for word in ("没有可采集", "不可采集")):
@@ -427,11 +524,9 @@ class MiningAndNavMixin:
                     await self._dig_to_layer(layer, deadline)
                 except SkillError as dig_exc:
                     error = dig_exc
-                remaining = int(max(20, deadline - time.monotonic()))
                 try:
-                    result = await self.gather(
-                        resource, target, radius=radius,
-                        max_seconds=remaining, allow_night=allow_night,
+                    result = await self._gather_deep_branches(
+                        resource, target, radius, deadline, allow_night, baseline,
                     )
                     error = None
                 except SkillError as gather_exc:

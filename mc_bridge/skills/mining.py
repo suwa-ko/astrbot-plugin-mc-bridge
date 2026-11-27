@@ -175,7 +175,13 @@ class MiningAndNavMixin:
         if not self._diggable_block(below.get("block")):
             return False
         under_block = str(under.get("block") or "")
-        if not under_block or under_block.endswith("air") or "water" in under_block or "lava" in under_block:
+        if (
+            not under_block
+            or under_block.endswith("air")
+            or "water" in under_block
+            or "lava" in under_block
+            or "magma" in under_block
+        ):
             return False
         return self._diggable_block(under_block) or bool(under.get("standable"))
 
@@ -230,8 +236,63 @@ class MiningAndNavMixin:
             int(math.floor(current[2])),
         )
 
+    async def _step_horizontal_tunnel(self, dx: int, dz: int, steps: int = 2) -> bool:
+        """Deterministically mine a 1x2 horizontal tunnel step-by-step inside rock."""
+        moved_any = False
+        for _ in range(max(1, int(steps))):
+            status = await self.status()
+            current = self._coords(status)
+            if current is None:
+                return moved_any
+            x = int(math.floor(current[0]))
+            y = int(math.floor(current[1]))
+            z = int(math.floor(current[2]))
+            tx, tz = x + dx, z + dz
+            try:
+                floor = await self._call("block_context", {"x": tx, "y": y - 1, "z": tz}, timeout=8)
+                body = await self._call("block_context", {"x": tx, "y": y, "z": tz}, timeout=8)
+                head = await self._call("block_context", {"x": tx, "y": y + 1, "z": tz}, timeout=8)
+            except Exception:
+                return moved_any
+            floor_blk = str(floor.get("block") or "")
+            body_blk = str(body.get("block") or "")
+            head_blk = str(head.get("block") or "")
+            if (
+                not floor_blk
+                or floor_blk.endswith("air")
+                or "water" in floor_blk
+                or "lava" in floor_blk
+                or "magma" in floor_blk
+                or floor.get("fluid")
+            ):
+                return moved_any
+            if (
+                any(
+                    "water" in b or "lava" in b
+                    or any(w in b for w in ("chest", "barrel", "furnace", "hopper", "bed"))
+                    for b in (body_blk, head_blk)
+                )
+                or body.get("fluid")
+                or head.get("fluid")
+            ):
+                return moved_any
+            for ty, blk in ((y, body_blk), (y + 1, head_blk)):
+                if blk and not blk.endswith("air"):
+                    try:
+                        await self._run("mine_at", {"x": tx, "y": ty, "z": tz}, seconds=12)
+                    except SkillError:
+                        return moved_any
+            await self.plugin._approach_target(
+                tx, y, tz, seconds=12, reach=0.7, allow_break=False,
+            )
+            after = self._coords(await self.status())
+            if after is None or math.hypot(after[0] - current[0], after[2] - current[2]) < 0.5:
+                return moved_any
+            moved_any = True
+        return moved_any
+
     async def _relocate_shaft(self, x: int, y: int, z: int) -> bool:
-        """Tunnel 2-3 blocks laterally to a safe shaft column when a void/cave is directly below."""
+        """Tunnel 2-3 blocks laterally to a safe shaft column when a void/cave/hazard is below."""
         for dist in (2, 3):
             for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 nx, nz = x + dx * dist, z + dz * dist
@@ -239,9 +300,13 @@ class MiningAndNavMixin:
                     continue
                 try:
                     moved = await self.tunnel_to([nx, y, nz], max_distance=6, reach=1.2)
+                    if isinstance(moved, dict) and moved.get("arrived") and await self._can_dig_here():
+                        return True
                 except Exception:
-                    continue
-                if isinstance(moved, dict) and moved.get("arrived") and await self._can_dig_here():
+                    pass
+                # Inside solid rock, tunnel_to rejects non-standable target cells;
+                # fall back to deterministic 1x2 horizontal mining.
+                if await self._step_horizontal_tunnel(dx, dz, steps=dist) and await self._can_dig_here():
                     return True
         return False
 

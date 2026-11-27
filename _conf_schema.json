@@ -40,6 +40,30 @@
     "default": "your-provider/chat-model",
     "hint": "mc 前缀指令固定走这个模型，不经过 GPT 自动路由。"
   },
+  "coach_enabled": {
+    "description": "启用 Coach 离线教练反馈学习",
+    "type": "bool",
+    "default": true,
+    "hint": "任务终态后异步计算客观奖励、隔离底层代码 Bug、提炼脱敏经验规则，不阻塞实时执行。"
+  },
+  "coach_provider_id": {
+    "description": "Coach 教练复盘使用的模型 Provider ID（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "留空则复用 mc_provider_id。"
+  },
+  "coach_require_approval": {
+    "description": "Coach 提炼的新经验需要主人审核转正",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后 AI 提炼的经验先以 candidate 暂存，主人发 mccoach approve <id> 后才注入。"
+  },
+  "coach_max_injected_lessons": {
+    "description": "每轮最多注入的 Coach 生效经验条数",
+    "type": "int",
+    "default": 3,
+    "hint": "严格限制上限（1~5），防止上下文膨胀。"
+  },
   "persona_id": {
     "description": "MC Agent 使用的人格 ID",
     "type": "string",

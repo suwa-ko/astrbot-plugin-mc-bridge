@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.0
+
+- **Phase 4：Coach 离线教练反馈学习系统（`mc_bridge/coach/`）**：
+  - **客观奖励函数（`reward.py`）**：基于真实 `goal_outcome`、完成比例、耗时、掉血、撤离与重试次数计算标准化奖励 $R \in [-1, 1]$。
+  - **Playbook + 胜率淘汰 + 隐私脱敏（`store.py`）**：本地 SQLite `coach.db`（WAL + `0600`），全部内容经 `privacy.redact_text()` 脱敏并拒绝含坐标规则；每轮最多检索 Top-3 生效经验，持续跟踪注入后胜率并在表现差时自动淘汰。
+  - **Bug 隔离队列（`code_issues`）**：`code_or_env_bug`（含确定性报错快筛与 LLM 归因）自动隔离进缺陷队列，绝不污染 Playbook 提示词。
+  - **多路径 Bandit & 宏沉淀**：提供 UCB1 `rank_arms()` 与高分 `mc_plan` 宏模板记录。
+  - **主人私聊快捷命令 `mccoach`**：支持查看复盘摘要、`mccoach approve <id>` / `retire <id>` / `teach <scope> <规则>` / `bugs`。
+
 ## 1.8.0
 
 - **Phase 3：Mod `1.0.0` 重构与 Protocol 4 事件推送化**：

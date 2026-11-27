@@ -496,6 +496,12 @@ class McBridgePlugin(RuntimeMixin, Star):
             except Exception:
                 pass
             self._memory_store = None
+        if getattr(self, "_coach", None) is not None:
+            try:
+                self._coach.store.close()
+            except Exception:
+                pass
+            self._coach = None
         if getattr(self,'_telemetry',None) is not None:
             await self._telemetry.close()
         self._started = False
@@ -1357,6 +1363,13 @@ class McBridgePlugin(RuntimeMixin, Star):
                     )
                 if not allow_actions:
                     system_prompt+=("\n本轮是回忆/任务期间聊天，只能查看或回忆，不执行新的游戏动作。" if owner else "\n当前说话的人不是主人，只能聊天和查看状态/画面；动作需要主人下令。")
+                elif owner:
+                    coach = getattr(self, "_coach", None) or self._coach_for()
+                    if coach is not None:
+                        playbook_block, lesson_ids = coach.format_playbook_prompt()
+                        if playbook_block:
+                            system_prompt += playbook_block
+                        self._last_injected_lesson_ids = lesson_ids
                 trace.data['context'].update(persona_chars=len(persona),persona_sha256=hashlib.sha256(persona.encode()).hexdigest(),system_chars=len(system_prompt),prompt_estimated_tokens=estimate_tokens(prompt))
                 ctx=observed_context(self.context,trace) if trace.store is not None else self.context
                 start=time.monotonic()
@@ -1411,8 +1424,32 @@ class McBridgePlugin(RuntimeMixin, Star):
             "mc你现在在哪，血量多少\n"
             "mc跟着我 / mc来我这边 / mc去坐标100 64 -200\n"
             "mc看看前面有什么\n"
-            "快捷操作：mcstatus 查状态、mcstop 停止、mcshot 截图。"
+            "快捷操作：mcstatus 查状态、mcstop 停止、mcshot 截图、mccoach 教练经验。"
         )
+
+    def _handle_coach_command(self, args: str) -> str:
+        coach = self._coach_for()
+        if coach is None:
+            return "Coach 教练学习未启用（可在配置中开启 coach_enabled）"
+        parts = str(args or "").strip().split(None, 2)
+        if not parts:
+            return coach.format_digest()
+        cmd = parts[0].lower()
+        if cmd == "approve" and len(parts) >= 2 and parts[1].isdigit():
+            ok = coach.store.approve_lesson(int(parts[1]))
+            return f"已转正经验 #{parts[1]}" if ok else f"未找到经验 #{parts[1]}"
+        if cmd == "retire" and len(parts) >= 2 and parts[1].isdigit():
+            ok = coach.store.retire_lesson(int(parts[1]))
+            return f"已废弃经验 #{parts[1]}" if ok else f"未找到经验 #{parts[1]}"
+        if cmd == "teach" and len(parts) >= 3:
+            lid = coach.record_owner_feedback(parts[1], parts[2])
+            return f"已记入生效经验 #{lid}（scope={parts[1]}）" if lid else "内容无效或包含坐标，未写入"
+        if cmd == "bugs":
+            bugs = coach.store.list_code_issues(status="open", limit=10)
+            if not bugs:
+                return "当前没有待处理的代码/环境问题。"
+            return "\n".join(f"#{b['id']} [{b['scope']} x{b['occurrences']}] {b['error_summary']}" for b in bugs)
+        return coach.format_digest()
 
     @staticmethod
     def _parse_input(text: str) -> tuple[str, str] | None:
@@ -1425,9 +1462,12 @@ class McBridgePlugin(RuntimeMixin, Star):
             "mcstatus": "status",
             "mcstop": "stop",
             "mcshot": "shot",
+            "mccoach": "coach",
         }
         if low in shortcuts:
             return shortcuts[low], ""
+        if low.startswith("mccoach "):
+            return "coach", text[7:].strip()
         if not re.match(r"(?i)^mc(?![a-z0-9_])", text):
             return None
         prompt = text[2:].lstrip(" \t\r\n:：,，")
@@ -1542,6 +1582,9 @@ class McBridgePlugin(RuntimeMixin, Star):
                 yield event.plain_result("截图失败：" + str(exc))
                 return
             yield event.image_result(str(path))
+            return
+        if action == "coach":
+            yield event.plain_result(self._handle_coach_command(prompt))
             return
         key = self._mc_session_key(event)
         if not hasattr(self,'_pending_actions'): self._pending_actions={}

@@ -36,6 +36,7 @@ from ..task_metrics import TaskMetrics
 from ..task_recovery import TaskRecovery
 from ..telemetry import CURRENT_TRACE, Telemetry, ToolHooks, Trace, observed_context
 from .context import CONTROL_EPOCH, CURRENT_EVENT, PLUGIN_NAME, RESOURCE_MENTION
+from .coach import CoachEngine, CoachStore
 from .server import BridgeError, QueuedTask, classify_goal_outcome
 
 
@@ -858,6 +859,87 @@ class RuntimeMixin:
             logger.warning("[mc-bridge] structured home_bed write deferred: %s", type(exc).__name__)
             return None
 
+    def _coach_for(self) -> CoachEngine | None:
+        if not bool(self.config.get("coach_enabled", True)):
+            return None
+        coach = getattr(self, "_coach", None)
+        if coach is not None:
+            return coach
+        try:
+            data_dir = StarTools.get_data_dir(PLUGIN_NAME)
+        except Exception:
+            return None
+        store = CoachStore(Path(data_dir) / "coach.db")
+        require_approval = bool(self.config.get("coach_require_approval", True))
+        try:
+            max_injected = max(1, min(5, int(self.config.get("coach_max_injected_lessons", 3))))
+        except (TypeError, ValueError):
+            max_injected = 3
+        coach = CoachEngine(
+            store,
+            llm_call=self._coach_llm_call,
+            require_approval=require_approval,
+            max_injected=max_injected,
+        )
+        self._coach = coach
+        return coach
+
+    async def _coach_llm_call(self, system_prompt: str, user_prompt: str) -> str:
+        provider_id = str(
+            self.config.get("coach_provider_id") or self.config.get("mc_provider_id") or ""
+        ).strip()
+        if not provider_id or not hasattr(self, "context") or not hasattr(self.context, "llm_generate"):
+            return ""
+        resp = await self.context.llm_generate(
+            chat_provider_id=provider_id,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+        )
+        return str(getattr(resp, "completion_text", "") or "")
+
+    def _schedule_coach_feedback(self, item, status: str, *, result=None, error="", goal_outcome="") -> None:
+        coach = getattr(self, "_coach", None)
+        if coach is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        baseline = getattr(item, "baseline", {}) or {}
+        last_status = getattr(self, "_last_status", {}) or {}
+        hp_before = float(baseline.get("health") or 0)
+        hp_after = float(last_status.get("health") or hp_before)
+        hp_delta = hp_after - hp_before if hp_before > 0 else 0.0
+        requested = 0
+        if isinstance(result, dict):
+            try:
+                requested = int(result.get("requested") or 0)
+            except (TypeError, ValueError):
+                requested = 0
+        injected = list(getattr(self, "_last_injected_lesson_ids", []) or [])
+        plan_steps = (getattr(item, "params", {}) or {}).get("steps") if str(getattr(item, "kind", "")) == "plan" else None
+
+        async def _run():
+            try:
+                await coach.on_task_finished(
+                    opcode=str(getattr(item, "kind", "") or ""),
+                    goal=str(getattr(item, "goal", "") or ""),
+                    status=status,
+                    goal_outcome=str(goal_outcome or getattr(item, "goal_outcome", "") or ""),
+                    confirmed=self._confirmed_count(result),
+                    requested=requested,
+                    health_delta=hp_delta,
+                    attempts=int(getattr(item, "attempts", 1) or 1),
+                    error=str(error or ""),
+                    result_summary=self._task_result_summary(result),
+                    injected_lesson_ids=injected,
+                    plan_steps=plan_steps if isinstance(plan_steps, list) else None,
+                )
+            except Exception as exc:
+                logger.warning("[mc-bridge] coach reflection skipped: %s", type(exc).__name__)
+
+        loop.create_task(_run(), name="mc-bridge-coach")
+
     def _record_task_terminal_event(self, item, status: str, *, result=None, error="", goal_outcome=""):
         store = getattr(self, "_memory_store", None)
         if store is None:
@@ -919,6 +1001,7 @@ class RuntimeMixin:
                 observation_scope="task_worker",
                 source="task_worker",
             )
+            self._schedule_coach_feedback(item, status, result=result, error=error, goal_outcome=goal_outcome)
             return task_id
         except Exception as exc:
             logger.warning("[mc-bridge] task event index deferred: %s", type(exc).__name__)

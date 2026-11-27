@@ -898,7 +898,7 @@ class RuntimeMixin:
         return str(getattr(resp, "completion_text", "") or "")
 
     def _schedule_coach_feedback(self, item, status: str, *, result=None, error="", goal_outcome="") -> None:
-        coach = getattr(self, "_coach", None)
+        coach = self._coach_for()
         if coach is None:
             return
         try:

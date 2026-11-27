@@ -220,9 +220,25 @@ class MiningAndNavMixin:
             return True
         return await self._move_to_dig_site()
 
+    async def _relocate_shaft(self, x: int, y: int, z: int) -> bool:
+        """Tunnel 2-3 blocks laterally to a safe shaft column when a void/cave is directly below."""
+        for dist in (2, 3):
+            for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, nz = x + dx * dist, z + dz * dist
+                if not await self._can_dig_at(nx, y, nz):
+                    continue
+                try:
+                    moved = await self.tunnel_to([nx, y, nz], max_distance=6, reach=1.2)
+                except Exception:
+                    continue
+                if isinstance(moved, dict) and moved.get("arrived") and await self._can_dig_here():
+                    return True
+        return False
+
     async def _dig_to_layer(self, target_y, deadline, step=8):
-        """Dig a safe 1x1 shaft down toward a target Y, returning progress."""
+        """Dig a safe 1x1 shaft down toward a target Y, relocating laterally around voids."""
         digs = 0
+        relocations = 0
         target_y = int(target_y)
         while True:
             if time.monotonic() >= deadline:
@@ -230,7 +246,9 @@ class MiningAndNavMixin:
             status = await self.status()
             position = status.get("position") or {}
             try:
+                x = int(math.floor(float(position.get("x", 0))))
                 y = int(math.floor(float(position.get("y", 0))))
+                z = int(math.floor(float(position.get("z", 0))))
             except (TypeError, ValueError):
                 raise SkillError("当前位置不可用，无法向下挖掘")
             if y <= target_y + 2:
@@ -250,6 +268,10 @@ class MiningAndNavMixin:
                         text = str(retry_exc)
                     else:
                         text = ""
+                if text and ("no safe floor" in text or "falling" in text) and relocations < 3:
+                    relocations += 1
+                    if await self._relocate_shaft(x, y, z):
+                        continue
                 if text and any(
                     word in text for word in (
                         "不在可破坏类别", "not standing safely",

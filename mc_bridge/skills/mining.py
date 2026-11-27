@@ -278,7 +278,7 @@ class MiningAndNavMixin:
                         text = str(retry_exc)
                     else:
                         text = ""
-                if text and ("no safe floor" in text or "falling" in text) and relocations < 3:
+                if text and any(w in text for w in ("no safe floor", "falling", "不在可破坏类别")) and relocations < 5:
                     relocations += 1
                     if await self._relocate_shaft(x, y, z):
                         continue

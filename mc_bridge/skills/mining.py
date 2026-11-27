@@ -218,7 +218,17 @@ class MiningAndNavMixin:
     async def _prepare_dig_site(self):
         if await self._can_dig_here():
             return True
-        return await self._move_to_dig_site()
+        if await self._move_to_dig_site():
+            return True
+        status = await self.status()
+        current = self._coords(status)
+        if current is None:
+            return False
+        return await self._relocate_shaft(
+            int(math.floor(current[0])),
+            int(math.floor(current[1])),
+            int(math.floor(current[2])),
+        )
 
     async def _relocate_shaft(self, x: int, y: int, z: int) -> bool:
         """Tunnel 2-3 blocks laterally to a safe shaft column when a void/cave is directly below."""

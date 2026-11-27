@@ -129,6 +129,7 @@ class L2Opcode(str, Enum):
     SMELT_ITEM = "smelt_item"
     CONTAINER_TRANSFER = "container_transfer"
     BUILD = "build"
+    BUILD_BLUEPRINT = "build_blueprint"
     FARM = "farm"
     RESUPPLY = "resupply"
     EXPLORE = "explore"
@@ -166,6 +167,7 @@ L2_ONLY = frozenset({
     "smelt_item",
     "container_transfer",
     "build",
+    "build_blueprint",
     "farm",
     "resupply",
     "explore",
@@ -312,6 +314,7 @@ L2_SPECS: dict[L2Opcode, L2Spec] = {
     L2Opcode.SMELT_ITEM: L2Spec(L2Opcode.SMELT_ITEM, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.CONTAINER}), 900),
     L2Opcode.CONTAINER_TRANSFER: L2Spec(L2Opcode.CONTAINER_TRANSFER, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.CONTAINER}), 120),
     L2Opcode.BUILD: L2Spec(L2Opcode.BUILD, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 300),
+    L2Opcode.BUILD_BLUEPRINT: L2Spec(L2Opcode.BUILD_BLUEPRINT, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 900),
     L2Opcode.FARM: L2Spec(L2Opcode.FARM, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 300),
     L2Opcode.RESUPPLY: L2Spec(L2Opcode.RESUPPLY, frozenset({Resource.ACTOR, Resource.NAVIGATION, Resource.CONTAINER}), 600),
     L2Opcode.EXPLORE: L2Spec(L2Opcode.EXPLORE, frozenset({Resource.ACTOR, Resource.NAVIGATION}), 300),

@@ -731,6 +731,66 @@ class SurvivalOpsMixin:
             "goal_outcome": outcome,
         }
 
+    async def _ensure_offhand_shield(self, status=None):
+        """Best-effort equip a shield to offhand if carried in inventory."""
+        status = status or await self.status()
+        all_items = [r for r in (status.get("inventory_items") or []) if isinstance(r, dict)]
+        if any(str(r.get("id") or "") == "minecraft:shield" and int(r.get("slot", -1)) == 40 for r in all_items):
+            return True
+        if self.item_count(status, "minecraft:shield") < 1:
+            return False
+        try:
+            await self._run("equip", {"item": "minecraft:shield", "slot": "offhand"}, seconds=4)
+            return True
+        except Exception:
+            return False
+
+    async def _emergency_fire_water_bucket(self, status=None):
+        """Extinguish fire or cool lava underfoot using a water bucket outside the Nether."""
+        status = status or await self.status()
+        if not (status.get("on_fire") or status.get("in_lava")):
+            return False
+        if "nether" in str(status.get("dimension") or "").lower():
+            return False
+        if self.item_count(status, "minecraft:water_bucket") < 1:
+            return False
+        try:
+            await self._call("select_slot", {"item": "minecraft:water_bucket"}, timeout=5)
+            await self._call("look", {"pitch": 88.0}, timeout=5)
+            await self._call("use_item", {}, timeout=5)
+            await asyncio.sleep(0.5)
+            await self._call("use_item", {}, timeout=5)
+            return True
+        except Exception:
+            return False
+
+    async def _raise_shield_briefly(self, duration=0.7):
+        """Raise offhand shield briefly to absorb incoming projectile/explosion."""
+        try:
+            await self._call("use_item", {"hand": "off_hand"}, timeout=5)
+            await asyncio.sleep(max(0.2, min(1.5, float(duration))))
+            await self._call("release_use", {}, timeout=5)
+            return True
+        except Exception:
+            return False
+
+    async def _try_ranged_shot(self, status, hostile):
+        """Fire one bow shot when carrying bow+arrows against a mid-range hostile."""
+        if self.item_count(status, "minecraft:bow") < 1 or self.item_count(status, "minecraft:arrow") < 1:
+            return False
+        pos = hostile.get("position") or {}
+        if not pos:
+            return False
+        try:
+            await self._call("select_slot", {"item": "minecraft:bow"}, timeout=5)
+            await self._call("look_at", {"x": pos.get("x", 0), "y": float(pos.get("y", 64)) + 1.0, "z": pos.get("z", 0)}, timeout=5)
+            await self._call("use_item", {}, timeout=5)
+            await asyncio.sleep(0.95)
+            await self._call("release_use", {}, timeout=5)
+            return True
+        except Exception:
+            return False
+
     async def combat(self, target="", max_seconds=30, retreat_health=8,
                      hold_health=None, finish_low_target=False, max_targets=0,
                      leash_radius=0, blacklist=()):
@@ -750,13 +810,17 @@ class SurvivalOpsMixin:
                 await selector()
             except Exception:
                 pass
+        has_shield = await self._ensure_offhand_shield()
         while time.monotonic() < deadline:
             status = await self.status()
+            if status.get("in_lava") or status.get("on_fire"):
+                await self._emergency_fire_water_bucket(status)
             health = _num(status.get("health"), 20)
             position = status.get("position") if isinstance(status.get("position"), dict) else {}
             if anchor is None and position:
                 anchor = dict(position)
-            hostiles = [row for row in (status.get("hostiles") or []) if isinstance(row, dict)]
+            raw_hostiles = [row for row in (status.get("hostiles") or []) if isinstance(row, dict)]
+            hostiles = list(raw_hostiles)
             if target_text:
                 hostiles = [
                     row for row in hostiles
@@ -770,6 +834,21 @@ class SurvivalOpsMixin:
             ]
             if not hostiles:
                 return {"skill": "combat", "target": target, "attacked": attacked, "result": "no_target"}
+            # Creeper blast-range guard: back off from close creepers before engaging.
+            close_creeper = next(
+                (
+                    row for row in raw_hostiles
+                    if "creeper" in (str(row.get("name", "")) + " " + str(row.get("type", ""))).lower()
+                    and _num(row.get("distance"), 999) <= 5.5
+                ),
+                None,
+            )
+            if close_creeper is not None:
+                if has_shield:
+                    await self._raise_shield_briefly(0.5)
+                outcome = await self.plugin._auto_flee(status, close_creeper)
+                return {"skill": "combat", "target": target, "attacked": attacked,
+                        "result": "retreated_creeper", "detail": outcome}
             hostile = min(hostiles, key=lambda row: _num(row.get("distance"), 999))
             if health <= retreat_health:
                 outcome = await self.plugin._auto_flee(status, hostile)
@@ -800,7 +879,14 @@ class SurvivalOpsMixin:
                 if distance > leash:
                     return {"skill": "combat", "target": target, "attacked": attacked,
                             "result": "leash_exceeded", "detail": "目标超出战斗半径"}
-            if _num(hostile.get("distance"), 99) > 3.2:
+            dist = _num(hostile.get("distance"), 99)
+            hostile_label = (str(hostile.get("name", "")) + " " + str(hostile.get("type", ""))).lower()
+            if 5.5 <= dist <= 16.0 and await self._try_ranged_shot(status, hostile):
+                attacked += 1
+                continue
+            if dist > 3.2:
+                if has_shield and any(r in hostile_label for r in ("skeleton", "stray", "pillager", "bogged")):
+                    await self._raise_shield_briefly(0.5)
                 position = hostile.get("position") or {}
                 error = await self.plugin._approach_target(
                     position.get("x", 0), position.get("y", 64), position.get("z", 0),

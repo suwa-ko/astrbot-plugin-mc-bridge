@@ -1454,12 +1454,50 @@ class RuntimeMixin:
                     self._scheduler_for().finish(item, success=False, error=str(exc), retryable=False)
                     self._record_task_terminal_event(item, "failed", error=exc, goal_outcome="unmet")
                     self._flush_scheduler_audit()
-                    other_routes={t.reply_route for t in self._task_queue if t.reply_route is not None and t.reply_route!=item.reply_route}
+                    queued_items = list(self._task_queue)
+                    cancelled_dependents = [
+                        {
+                            "task_id": str(getattr(q, "task_id", "") or ""),
+                            "kind": str(getattr(q, "kind", "") or ""),
+                            "goal": str(getattr(q, "goal", "") or ""),
+                        }
+                        for q in queued_items
+                    ]
+                    if cancelled_dependents:
+                        self._last_task_result["cancelled_dependents"] = cancelled_dependents
+                    failed_id = str(getattr(item, "task_id", "") or "")
+                    for q in queued_items:
+                        self._record_task_metric(
+                            q,
+                            "cancelled",
+                            time.monotonic(),
+                            error=f"前置任务 {failed_id} 失败导致级联取消",
+                            goal_outcome="unmet",
+                        )
+                    other_routes = {
+                        t.reply_route for t in queued_items
+                        if t.reply_route is not None and t.reply_route != item.reply_route
+                    }
                     self._scheduler_for().cancel_all("previous task failed; queue cancelled")
                     self._task_queue.clear()
                     await self._call("baritone", {"command": "stop"}, timeout=5)
+                    err_text = await self._task_error_text(exc)
                     if not getattr(item, "suppress_notify", False):
-                        await self._task_chat(f"任务失败（{getattr(item, 'task_id', '')}），后续队列已停止：{await self._task_error_text(exc)}")
+                        suffix = ""
+                        if cancelled_dependents:
+                            labels = "、".join(
+                                (d["goal"] or d["task_id"])[:32] for d in cancelled_dependents[:3]
+                            )
+                            suffix = f"（级联取消 {len(cancelled_dependents)} 项：{labels}）"
+                        await self._task_chat(f"任务失败（{failed_id}），后续队列已停止{suffix}：{err_text}")
+                    elif cancelled_dependents:
+                        labels = "、".join(
+                            (d["goal"] or d["task_id"])[:32] for d in cancelled_dependents[:3]
+                        )
+                        await self._task_chat(
+                            f"前置任务（{failed_id}）失败，后续排队任务已级联取消（{labels}），请重新规划：{err_text}",
+                            kind="cancel",
+                        )
                     for destination in other_routes:
                         await self._task_chat('前一个任务未完成，你的排队任务已取消，请重新下达',route=destination,kind='cancel')
                     break

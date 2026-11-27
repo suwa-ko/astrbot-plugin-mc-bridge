@@ -7,6 +7,11 @@ import com.google.gson.JsonParser;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
+import net.minecraft.client.gui.screens.ConnectScreen;
+import net.minecraft.client.gui.screens.DisconnectedScreen;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.multiplayer.ServerData;
+import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.core.component.DataComponents;
@@ -48,7 +53,8 @@ public final class BridgeClient {
             "collision_navigation", "move_item", "trade", "ride", "dismount", "wake",
             "plant", "till", "jump", "dig_down", "block_context", "get_menu",
             "interact_block", "release_use", "mine_below", "align", "use_bonemeal",
-            "ladder_assist", "navigation_break_budget", "survival_events", "hunt");
+            "ladder_assist", "navigation_break_budget", "survival_events", "hunt",
+            "auto_reconnect");
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -70,6 +76,9 @@ public final class BridgeClient {
     private long eatingTraceNext;
     private LocalPlayer respawnRequestedFor;
     private LocalPlayer controlledActor,observedDeath;
+    private ServerData lastServerData;
+    private int serverReconnectAttempts;
+    private long serverReconnectAt;
 
     private volatile WebSocket socket;
     private volatile boolean started;
@@ -127,6 +136,7 @@ public final class BridgeClient {
             return;
         }
         Minecraft mc=Minecraft.getInstance();
+        autoReconnectServerTick(mc);
         if(mc.player==null||mc.level==null||!mc.level.hasChunkAt(mc.player.blockPosition())) {
             if(socket!=null){WebSocket previous=socket;disconnect(previous);previous.sendClose(1000,"left game world");}
             return;
@@ -134,6 +144,59 @@ public final class BridgeClient {
         if (socket == null && !connecting && System.currentTimeMillis() >= nextReconnect) {
             connect();
         }
+    }
+
+    static long reconnectBackoffMs(int baseSeconds, int attempt) {
+        long base = Math.max(5L, Math.min(300L, baseSeconds)) * 1000L;
+        int shift = Math.max(0, Math.min(4, attempt));
+        return Math.min(180_000L, base * (1L << shift));
+    }
+
+    private void autoReconnectServerTick(Minecraft mc) {
+        if (mc.player != null && mc.level != null) {
+            ServerData cur = mc.getCurrentServer();
+            if (cur != null && cur.ip != null && !cur.ip.isBlank()) {
+                lastServerData = new ServerData(cur.name, cur.ip, cur.type());
+            }
+            serverReconnectAttempts = 0;
+            serverReconnectAt = 0;
+            return;
+        }
+        if (!(mc.screen instanceof DisconnectedScreen) || lastServerData == null) {
+            return;
+        }
+        boolean enabled;
+        int baseSeconds;
+        int maxAttempts;
+        try {
+            enabled = BridgeConfig.AUTO_RECONNECT_SERVER.get();
+            baseSeconds = BridgeConfig.AUTO_RECONNECT_DELAY_SECONDS.get();
+            maxAttempts = BridgeConfig.AUTO_RECONNECT_MAX_ATTEMPTS.get();
+        } catch (Exception ignored) {
+            return;
+        }
+        if (!enabled || (maxAttempts > 0 && serverReconnectAttempts >= maxAttempts)) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (serverReconnectAt == 0) {
+            long delayMs = reconnectBackoffMs(baseSeconds, serverReconnectAttempts);
+            serverReconnectAt = now + delayMs;
+            AstrBotBridge.LOGGER.info(
+                    "[astrbot-bridge] disconnected from {}; scheduling auto-reconnect in {}s (attempt {})",
+                    lastServerData.ip, delayMs / 1000L, serverReconnectAttempts + 1);
+            return;
+        }
+        if (now < serverReconnectAt) {
+            return;
+        }
+        serverReconnectAttempts++;
+        serverReconnectAt = 0;
+        ServerData target = new ServerData(lastServerData.name, lastServerData.ip, lastServerData.type());
+        AstrBotBridge.LOGGER.info(
+                "[astrbot-bridge] auto-reconnecting to {} (attempt {})", target.ip, serverReconnectAttempts);
+        ConnectScreen.startConnecting(
+                new TitleScreen(), mc, ServerAddress.parseString(target.ip), target, false, null);
     }
 
     private void start() {

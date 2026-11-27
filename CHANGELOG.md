@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.0
+
+- **P0 挂机稳定性与采矿后勤闭环（Mod `1.1.0` + Plugin `2.1.0`）**：
+  - **客户端断线自动重连（Mod `1.1.0`）**：`BridgeConfig` 新增 `autoReconnectServer` / `autoReconnectDelaySeconds` / `autoReconnectMaxAttempts`，遭遇 `DisconnectedScreen` 时按指数退避自动重连原多人服，并在 `hello.capabilities` 中宣告 `auto_reconnect`，衔接 Python 侧断线恢复闭环。
+  - **深层采矿全自动后勤**：`_ensure_pickaxe` 支持地下缺木棍时自动由原木/木板现搓木棍与工作台补镐；新增 `_place_mine_torch_if_dark()`（暗处 `block_light <= 4` 自动插火把）与 `_manage_mining_inventory()`（空位 ≤ 2 自动清理多余杂石并保留圆石储备）。
+  - **任务队列级联取消显式反馈**：`RuntimeMixin` 在前置任务失败触发队列级联取消时，为每个被取消的下游任务补记 `task_metrics.jsonl` 指标、写入 `cancelled_dependents`，并即使前置为静默短任务也主动通知主人/触发重规划。
+- **P1 战斗微操、蓝图建造与矿井复用**：
+  - **战斗与生存微操强化**：`combat()` 新增苦力怕近身（≤5.5 格）主动撤退与举盾防御、自动装备副手盾牌、远程敌怪举盾接近与弓箭中距离射击、着火/落岩浆自动水桶自救（下界自动跳过）。
+  - **结构化蓝图建造（`build_blueprint`）**：新增 `L2Opcode.BUILD_BLUEPRINT`，支持 `blocks` 与 `palette + layers` 两种 JSON 蓝图（含 `check_only` 材料核验）、自底向上逐层自动靠近放置并自动登记建筑保护区。
+  - **深层矿井入口记忆复用**：`mine_ore` 成功深层下挖后将安全入口持久化写入本地 `MemoryStore`（`kind="mine_shaft"`，坐标不入模型），后续深层挖矿优先复用周边 48 格内的既有安全矿井入口。
+
 ## 2.0.2
 
 - **深层采矿与自主返程稳定性升级（Plugin `2.0.2`）**：

@@ -126,6 +126,24 @@ class MiningAndNavMixin:
                 remaining = 0
             if remaining >= int(min_remaining):
                 return True
+        if self.item_count(status, "minecraft:iron_ingot") >= 3:
+            if self.item_count(status, "minecraft:stick") < 2:
+                plank_total = sum(self.item_count(status, pid) for pid in PLANK_IDS)
+                if plank_total < 2:
+                    for row in self.inventory_items(status):
+                        item_id = str(row.get("id", "") or "")
+                        if item_id.endswith(LOG_SUFFIX) and int(row.get("count", 0) or 0) >= 1:
+                            plank_id = item_id[:-len(LOG_SUFFIX)] + "_planks"
+                            try:
+                                await self.craft(plank_id, 4)
+                                break
+                            except SkillError:
+                                continue
+                try:
+                    await self.craft("minecraft:stick", 4)
+                except SkillError:
+                    pass
+                status = await self.status()
         if (
             self.item_count(status, "minecraft:iron_ingot") >= 3
             and self.item_count(status, "minecraft:stick") >= 2
@@ -403,6 +421,88 @@ class MiningAndNavMixin:
                 raise SkillError("向下挖掘没有进展")
             digs += y - after_y
 
+    async def _place_mine_torch_if_dark(self, status=None):
+        """Place a torch at feet when mining in dark tunnels (block_light <= 4)."""
+        now = time.monotonic()
+        if now - float(getattr(self, "_last_torch_at", 0.0) or 0.0) < 15.0:
+            return False
+        status = status or await self.status()
+        light = status.get("block_light")
+        if light is None:
+            return False
+        try:
+            if int(light) > 4:
+                return False
+        except (TypeError, ValueError):
+            return False
+        if self.item_count(status, "minecraft:torch") < 1:
+            return False
+        current = self._coords(status)
+        if current is None:
+            return False
+        x = int(math.floor(current[0]))
+        y = int(math.floor(current[1]))
+        z = int(math.floor(current[2]))
+        try:
+            await self._run(
+                "station",
+                {"operation": "place", "item": "minecraft:torch", "x": x, "y": y, "z": z},
+                seconds=6,
+            )
+            self._last_torch_at = now
+            return True
+        except Exception:
+            try:
+                await self._run("place_at", {"x": x, "y": y, "z": z, "item": "minecraft:torch"}, seconds=6)
+                self._last_torch_at = now
+                return True
+            except Exception:
+                return False
+
+    async def _manage_mining_inventory(self, status=None, min_empty=2):
+        """Drop excess low-value bulk rock when inventory is nearly full during deep mining."""
+        status = status or await self.status()
+        empty = status.get("empty_slots")
+        if empty is None:
+            used_main = {
+                int(row.get("slot", -1))
+                for row in self.inventory_items(status)
+                if 0 <= int(row.get("slot", -1)) < 36
+            }
+            empty = max(0, 36 - len(used_main))
+        try:
+            if int(empty) > int(min_empty):
+                return 0
+        except (TypeError, ValueError):
+            return 0
+        junk_order = (
+            ("minecraft:granite", 0),
+            ("minecraft:diorite", 0),
+            ("minecraft:andesite", 0),
+            ("minecraft:tuff", 0),
+            ("minecraft:gravel", 0),
+            ("minecraft:blackstone", 0),
+            ("minecraft:dirt", 16),
+            ("minecraft:cobbled_deepslate", 64),
+            ("minecraft:cobblestone", 64),
+        )
+        dropped_stacks = 0
+        for item_id, keep in junk_order:
+            if dropped_stacks >= 3:
+                break
+            have = self.item_count(status, item_id)
+            excess = have - keep
+            if excess <= 0:
+                continue
+            drop_qty = min(64, excess)
+            try:
+                await self._call("drop_item", {"item": item_id, "count": drop_qty}, timeout=8)
+                dropped_stacks += 1
+                status = await self.status()
+            except Exception:
+                continue
+        return dropped_stacks
+
     async def _gather_deep_branches(self, resource, target, radius, deadline, allow_night, baseline):
         """Collect deep ore at target depth, branch-tunneling if local scans come up short."""
         directions = ((1, 0), (0, 1), (-1, 0), (0, -1))
@@ -411,7 +511,8 @@ class MiningAndNavMixin:
         last_error = None
         collect_radius = max(int(radius), 16)
         for _ in range(24):
-            gained = self.item_count(await self.status(), resource) - baseline
+            status = await self.status()
+            gained = self.item_count(status, resource) - baseline
             if gained >= target:
                 res = dict(last_result or {})
                 res.update({"skill": "gather", "resource": resource, "requested": target, "collected": gained, "partial": False})
@@ -422,6 +523,8 @@ class MiningAndNavMixin:
                 last_error = SkillError("没有耐久足够的镐，无法继续深层采矿")
                 break
             await self._auto_eat_if_needed()
+            await self._manage_mining_inventory(status=status)
+            await self._place_mine_torch_if_dark(status=status)
             remaining = int(max(20, min(180, deadline - time.monotonic())))
             before_round = self.item_count(await self.status(), resource)
             try:
@@ -468,6 +571,61 @@ class MiningAndNavMixin:
             }
         raise last_error or SkillError("附近没有可采集的目标")
 
+    def _remember_mine_shaft(self, pos: tuple[int, int, int], status: dict) -> None:
+        """Persist a verified safe surface mine shaft entry in local MemoryStore."""
+        getter = getattr(self.plugin, "_memory_store_for", None)
+        scoper = getattr(self.plugin, "_memory_scope_for", None)
+        if not (callable(getter) and callable(scoper)):
+            return
+        try:
+            store = getter()
+            scope = scoper(status)
+            x, y, z = int(pos[0]), int(pos[1]), int(pos[2])
+            store.remember_place(
+                **scope,
+                kind="mine_shaft",
+                key="main",
+                name="深层矿井入口",
+                target={"x": x, "y": y, "z": z},
+                stand={"x": x, "y": y, "z": z, "feet_y": y},
+                target_status="valid",
+                stand_status="valid",
+                observation_status="loaded",
+                source="observed",
+                confidence=0.85,
+            )
+        except Exception:
+            pass
+
+    def _find_nearby_mine_shaft(self, status: dict, max_distance: float = 48.0):
+        """Return a nearby verified mine shaft entry (x, y, z) in the same world/dimension."""
+        getter = getattr(self.plugin, "_memory_store_for", None)
+        scoper = getattr(self.plugin, "_memory_scope_for", None)
+        if not (callable(getter) and callable(scoper)):
+            return None
+        current = self._coords(status)
+        if current is None:
+            return None
+        try:
+            store = getter()
+            scope = scoper(status)
+            row = store.latest_place(**scope, kind="mine_shaft", key="main")
+            if not row:
+                return None
+            view = store.local_view(row)
+            stand = view.get("stand") or view.get("target")
+            if not stand or stand.get("x") is None:
+                return None
+            sx = int(round(float(stand["x"])))
+            sy = int(round(float(stand.get("feet_y", stand["y"]))))
+            sz = int(round(float(stand["z"])))
+            horiz = math.hypot(sx - current[0], sz - current[2])
+            if 4.0 <= horiz <= float(max_distance) and abs(sy - current[1]) <= 12:
+                return (sx, sy, sz)
+        except Exception:
+            return None
+        return None
+
     async def mine_ore(self, resource="coal", count=8, radius=12, max_seconds=1200, allow_night=False, return_home=False):
         resource = RESOURCE_ALIASES.get(str(resource or "").strip().lower(), str(resource or "").strip().lower())
         if resource not in ORE_QUERIES and resource != "stone":
@@ -491,13 +649,28 @@ class MiningAndNavMixin:
             current_y = 0
 
         if layer is not None and current_y > layer + 2:
+            # Prefer reusing a previously verified nearby mine shaft entrance on the surface.
+            if layer <= 16 and current_y >= 50:
+                shaft = self._find_nearby_mine_shaft(status, max_distance=48.0)
+                if shaft is not None:
+                    try:
+                        await self.return_to(shaft, reach=2.0)
+                    except SkillError:
+                        pass
             # Deep ores: descend at the current mining site before scanning.
             # Letting gather() explore first can walk back into the base, where
             # the floor may be a slab and cannot be dug.
             if not await self._prepare_dig_site():
                 raise SkillError("附近没有可向下挖的自然地面；请先走到泥土/石头地面再挖矿")
+            entry_status = await self.status()
+            entry_coords = self._coords(entry_status)
             self._mark("mine_ore", "descending", 0, target, {"resource": resource, "target_y": layer})
-            await self._dig_to_layer(layer, deadline)
+            digs = await self._dig_to_layer(layer, deadline)
+            if digs >= 16 and entry_coords is not None:
+                self._remember_mine_shaft(
+                    (int(math.floor(entry_coords[0])), int(math.floor(entry_coords[1])), int(math.floor(entry_coords[2]))),
+                    entry_status,
+                )
             await self._auto_eat_if_needed()
             try:
                 result = await self._gather_deep_branches(

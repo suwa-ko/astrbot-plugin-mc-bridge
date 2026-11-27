@@ -201,18 +201,20 @@ class MiningAndNavMixin:
             int(math.floor(current[2])),
         )
 
-    async def _move_to_dig_site(self):
+    async def _move_to_dig_site(self, exclude_near=None):
         try:
             scan = await self._call("scan", {"resource": "logs", "radius": 12}, timeout=15)
         except Exception:
             return False
         ground = [row for row in (scan.get("ground") or []) if isinstance(row, dict)]
-        for row in sorted(ground, key=lambda item: _num(item.get("distance"), 999))[:12]:
+        for row in sorted(ground, key=lambda item: _num(item.get("distance"), 999))[:16]:
             try:
                 x = int(row["x"])
                 y = int(round(float(row.get("feet_y", row.get("y", 0)))))
                 z = int(row["z"])
             except (KeyError, TypeError, ValueError):
+                continue
+            if exclude_near is not None and math.hypot(x - exclude_near[0], z - exclude_near[1]) < 2.5:
                 continue
             if not await self._can_dig_at(x, y, z):
                 continue
@@ -308,7 +310,9 @@ class MiningAndNavMixin:
                 # fall back to deterministic 1x2 horizontal mining.
                 if await self._step_horizontal_tunnel(dx, dz, steps=dist) and await self._can_dig_here():
                     return True
-        return False
+        # On sloped surface terrain or near ponds, fixed-Y lateral steps may all miss;
+        # scan nearby natural ground at any reachable Y excluding the blocked column.
+        return await self._move_to_dig_site(exclude_near=(x, z))
 
     async def _dig_to_layer(self, target_y, deadline, step=8):
         """Dig a safe 1x1 shaft down toward a target Y, relocating laterally around voids."""

@@ -10,6 +10,7 @@ import time
 
 from .common import (
     ActionError,
+    CONTAINER_BLOCKS_QUERY,
     CROP_BLOCKS,
     CROP_SPECS,
     DEEP_ORE_LAYERS,
@@ -57,7 +58,7 @@ class SurvivalOpsMixin:
         data = await self._call(
             "scan_blocks",
             {"radius": max(2, min(16, int(radius))), "limit": max(1, min(16, int(limit))),
-             "block": "chest,trapped_chest,barrel"},
+             "block": CONTAINER_BLOCKS_QUERY},
             timeout=10,
         )
         rows = [row for row in (data.get("blocks") or []) if isinstance(row, dict)]
@@ -731,6 +732,28 @@ class SurvivalOpsMixin:
             "goal_outcome": outcome,
         }
 
+    async def _ensure_nether_gold_armor(self, status=None):
+        """When in the Nether, equip a golden armor piece from inventory if not already wearing gold."""
+        status = status or await self.status()
+        if "nether" not in str(status.get("dimension") or "").lower():
+            return True
+        all_items = [r for r in (status.get("inventory_items") or []) if isinstance(r, dict)]
+        armor_slots = {36, 37, 38, 39}
+        if any(
+            int(r.get("slot", -1)) in armor_slots and "golden_" in str(r.get("id") or "").lower()
+            for r in all_items
+        ):
+            return True
+        for row in self.inventory_items(status):
+            iid = str(row.get("id") or "").lower()
+            if "golden_" in iid and any(iid.endswith(s) for s in ("_boots", "_helmet", "_leggings", "_chestplate")):
+                try:
+                    await self._run("equip", {"item": iid}, seconds=4)
+                    return True
+                except Exception:
+                    continue
+        return False
+
     async def _ensure_offhand_shield(self, status=None):
         """Best-effort equip a shield to offhand if carried in inventory."""
         status = status or await self.status()
@@ -811,6 +834,7 @@ class SurvivalOpsMixin:
             except Exception:
                 pass
         has_shield = await self._ensure_offhand_shield()
+        await self._ensure_nether_gold_armor()
         while time.monotonic() < deadline:
             status = await self.status()
             if status.get("in_lava") or status.get("on_fire"):

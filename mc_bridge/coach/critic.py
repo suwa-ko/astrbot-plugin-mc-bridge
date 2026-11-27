@@ -52,11 +52,13 @@ class CoachEngine:
         llm_call: Callable[[str, str], Awaitable[str]] | None = None,
         require_approval: bool = True,
         max_injected: int = 3,
+        auto_trial: bool = False,
     ):
         self.store = store
         self.llm_call = llm_call
         self.require_approval = bool(require_approval)
         self.max_injected = max(1, min(5, int(max_injected)))
+        self.auto_trial = bool(auto_trial)
 
     @staticmethod
     def looks_like_code_bug(error: str) -> bool:
@@ -158,7 +160,16 @@ class CoachEngine:
                     )
                     action_taken = "code_issue_recorded"
                 elif rule:
-                    lesson_status = "candidate" if self.require_approval else "active"
+                    if not self.require_approval:
+                        lesson_status = "active"
+                    elif (
+                        self.auto_trial
+                        and confidence >= 0.78
+                        and category in {"planning_error", "param_error", "precondition_gap"}
+                    ):
+                        lesson_status = "trial"
+                    else:
+                        lesson_status = "candidate"
                     record_id = await asyncio.to_thread(
                         self.store.add_lesson,
                         scope=lesson_scope,
@@ -205,27 +216,42 @@ class CoachEngine:
             lines.append(f"- ({row['scope']}) {cond}{row['rule']}")
         return "\n".join(lines), ids
 
-    def format_digest(self) -> str:
+    def format_digest(self, metrics_snapshot: dict[str, Any] | None = None) -> str:
         """Human-readable summary for the owner's `mccoach` shortcut."""
         candidates = self.store.list_lessons(status="candidate", limit=5)
+        trials = self.store.list_lessons(status="trial", limit=5)
         active = self.store.list_lessons(status="active", limit=5)
         bugs = self.store.list_code_issues(status="open", limit=5)
         lines = [
-            f"Coach 状态：生效经验 {len(active)} 条 · 待审经验 {len(candidates)} 条 · 隔离代码问题 {len(bugs)} 条"
+            f"Coach 状态：生效经验 {len(active)} 条 · 灰度试用 {len(trials)} 条 · 待审经验 {len(candidates)} 条 · 隔离代码问题 {len(bugs)} 条"
         ]
+        if trials:
+            lines.append("灰度试用中（胜率达标自动转正，偏低自动淘汰）：")
+            for row in trials:
+                lines.append(f"  #{row['id']} [{row['scope']}] ({row['success_after']}胜/{row['fail_after']}负) {row['rule']}")
         if candidates:
-            lines.append("待审经验（发 mccoach approve <id> 转正 / retire <id> 废弃）：")
+            lines.append("待审经验（发 mccoach approve <id> 转正 / trial <id> 试用 / retire <id> 废弃）：")
             for row in candidates:
                 lines.append(f"  #{row['id']} [{row['scope']}] {row['rule']}")
         if active:
             lines.append("生效经验（最近）：")
             for row in active[:3]:
-                trials = row["success_after"] + row["fail_after"]
-                rate = f" ({row['success_after']}/{trials})" if trials else ""
+                trials_n = row["success_after"] + row["fail_after"]
+                rate = f" ({row['success_after']}/{trials_n})" if trials_n else ""
                 lines.append(f"  #{row['id']} [{row['scope']}]{rate} {row['rule']}")
         if bugs:
             lines.append("代码/环境问题队列（未写入经验库）：")
             for b in bugs[:3]:
                 lines.append(f"  #{b['id']} [{b['scope']} x{b['occurrences']}] {b['error_summary'][:100]}")
-        lines.append("快捷命令：mccoach teach <scope> <规则> | mccoach approve <id> | mccoach retire <id>")
+        if isinstance(metrics_snapshot, dict):
+            overall = metrics_snapshot.get("overall") or {}
+            total = int(overall.get("total", 0) or 0)
+            if total > 0:
+                sr = float(overall.get("success_rate", 0.0) or 0.0) * 100
+                fr = float(overall.get("goal_fulfilled_rate", 0.0) or 0.0) * 100
+                lines.append(f"任务仪表盘：总计 {total} 次 · 完成率 {sr:.1f}% · 达成率 {fr:.1f}%")
+                for alert in (metrics_snapshot.get("alerts") or [])[:4]:
+                    if isinstance(alert, dict) and alert.get("message"):
+                        lines.append(f"  ⚠ {alert['message']}")
+        lines.append("快捷命令：mccoach teach <scope> <规则> | approve <id> | trial <id> | retire <id> | stats")
         return "\n".join(lines)

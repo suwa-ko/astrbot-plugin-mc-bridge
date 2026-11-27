@@ -84,6 +84,7 @@ RESOURCE_ALIASES = {
     "沙子": "sand", "沙": "sand", "sand": "sand",
 }
 LOG_SUFFIX = "_log"
+CONTAINER_BLOCKS_QUERY = "chest,trapped_chest,barrel,shulker_box,cabinet,basket,drawer,crate,item_vault"
 STONE_IDS = {"minecraft:stone", "minecraft:cobblestone", "minecraft:deepslate", "minecraft:cobbled_deepslate"}
 ORE_ITEM_IDS = {
     "coal": {"minecraft:coal"},

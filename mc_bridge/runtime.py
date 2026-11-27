@@ -880,6 +880,7 @@ class RuntimeMixin:
             llm_call=self._coach_llm_call,
             require_approval=require_approval,
             max_injected=max_injected,
+            auto_trial=bool(self.config.get("coach_auto_trial", True)),
         )
         self._coach = coach
         return coach

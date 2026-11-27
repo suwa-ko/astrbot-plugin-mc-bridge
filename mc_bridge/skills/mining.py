@@ -359,6 +359,9 @@ class MiningAndNavMixin:
             if time.monotonic() >= deadline:
                 raise SkillError("向下挖掘到矿层超时")
             status = await self.status()
+            dim = str(status.get("dimension") or "").lower()
+            if "the_end" in dim:
+                raise SkillError("末地虚空风险过高，禁止垂直下挖")
             position = status.get("position") or {}
             try:
                 x = int(math.floor(float(position.get("x", 0))))
@@ -366,6 +369,8 @@ class MiningAndNavMixin:
                 z = int(math.floor(float(position.get("z", 0))))
             except (TypeError, ValueError):
                 raise SkillError("当前位置不可用，无法向下挖掘")
+            if "nether" in dim and y <= 34:
+                raise SkillError("下界接近岩浆海（y<=34），停止垂直下挖")
             if y <= target_y + 2:
                 return digs
             await self._align_over_cell(x, y, z, status=status)
@@ -641,6 +646,11 @@ class MiningAndNavMixin:
         error = None
         layer = DEEP_ORE_LAYERS.get(resource)
         status = await self.status()
+        dim = str(status.get("dimension") or "").lower()
+        if "the_end" in dim:
+            raise SkillError("末地虚空风险过高，禁止深层挖矿")
+        if "nether" in dim and resource in {"diamond", "redstone", "lapis", "emerald", "coal", "iron", "copper"}:
+            raise SkillError(f"下界不生成 {resource}，请先返回主世界再挖")
         baseline = self.item_count(status, resource)
         position = status.get("position") or {}
         try:

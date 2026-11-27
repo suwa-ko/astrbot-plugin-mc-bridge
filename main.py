@@ -1443,6 +1443,16 @@ class McBridgePlugin(RuntimeMixin, Star):
         if cmd == "approve" and len(parts) >= 2 and parts[1].isdigit():
             ok = coach.store.approve_lesson(int(parts[1]))
             return f"已转正经验 #{parts[1]}" if ok else f"未找到经验 #{parts[1]}"
+        if cmd == "trial" and len(parts) >= 2 and parts[1].isdigit():
+            ok = coach.store.start_trial(int(parts[1]))
+            return f"已将经验 #{parts[1]} 加入灰度试用" if ok else f"未找到经验 #{parts[1]}"
+        if cmd == "stats":
+            snap = None
+            try:
+                snap = self._task_metrics_for().snapshot()
+            except Exception:
+                snap = None
+            return coach.format_digest(metrics_snapshot=snap)
         if cmd == "retire" and len(parts) >= 2 and parts[1].isdigit():
             ok = coach.store.retire_lesson(int(parts[1]))
             return f"已废弃经验 #{parts[1]}" if ok else f"未找到经验 #{parts[1]}"

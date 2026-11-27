@@ -15,7 +15,7 @@ from typing import Any, Iterable
 from ...privacy import contains_coordinate, redact_text
 
 VALID_CATEGORIES = {"planning_error", "param_error", "precondition_gap", "owner_feedback"}
-VALID_STATUSES = {"candidate", "active", "retired"}
+VALID_STATUSES = {"candidate", "trial", "active", "retired"}
 
 
 def _clean_text(value: Any, limit: int = 240) -> str:
@@ -170,6 +170,15 @@ class CoachStore:
             self.db.commit()
             return cur.rowcount > 0
 
+    def start_trial(self, lesson_id: int) -> bool:
+        with self.lock:
+            cur = self.db.execute(
+                "UPDATE lessons SET status = 'trial', updated_at = ? WHERE id = ?",
+                (time.time(), int(lesson_id)),
+            )
+            self.db.commit()
+            return cur.rowcount > 0
+
     def retire_lesson(self, lesson_id: int) -> bool:
         with self.lock:
             cur = self.db.execute(
@@ -194,41 +203,60 @@ class CoachStore:
             rows = self.db.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
-    def retrieve_lessons(self, scope: str = "", *, limit: int = 3, include_global: bool = True) -> list[dict[str, Any]]:
-        """Retrieve Top-K active lessons ranked by smoothed win rate + confidence.
-
-        When ``scope`` is empty, retrieves across all active scopes so owner-taught
-        or task-specific lessons are eligible for general agent turns.
-        """
+    def retrieve_lessons(
+        self,
+        scope: str = "",
+        *,
+        limit: int = 3,
+        include_global: bool = True,
+        include_trial: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Retrieve Top-K active lessons (plus at most 1 grayscale trial lesson)."""
         limit = max(1, min(5, int(limit)))
         clean_scope = str(scope or "").strip().lower()
+        statuses = ("active", "trial") if include_trial else ("active",)
+        status_ph = ",".join("?" for _ in statuses)
         with self.lock:
             if not clean_scope:
-                rows = self.db.execute("SELECT * FROM lessons WHERE status = 'active'").fetchall()
+                rows = self.db.execute(
+                    f"SELECT * FROM lessons WHERE status IN ({status_ph})", statuses
+                ).fetchall()
             else:
                 scopes = [clean_scope]
                 if include_global and "global" not in scopes:
                     scopes.append("global")
-                placeholders = ",".join("?" for _ in scopes)
+                scope_ph = ",".join("?" for _ in scopes)
                 rows = self.db.execute(
-                    f"SELECT * FROM lessons WHERE status = 'active' AND scope IN ({placeholders})",
-                    scopes,
+                    f"SELECT * FROM lessons WHERE status IN ({status_ph}) AND scope IN ({scope_ph})",
+                    (*statuses, *scopes),
                 ).fetchall()
-        scored = []
+        active_scored = []
+        trial_scored = []
         for r in rows:
             d = dict(r)
-            # Laplace-smoothed win rate so brand-new lessons start near confidence.
             trials = d["success_after"] + d["fail_after"]
             win_rate = (d["success_after"] + 1.5) / (trials + 3.0)
             scope_bonus = 0.15 if clean_scope and d["scope"] == clean_scope else 0.0
             owner_bonus = 0.1 if d["source"] == "owner" else 0.0
             rank_score = win_rate * 0.6 + float(d["confidence"]) * 0.4 + scope_bonus + owner_bonus
-            scored.append((rank_score, d["updated_at"], d))
-        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        return [item[2] for item in scored[:limit]]
+            entry = (rank_score, d["updated_at"], d)
+            if d["status"] == "trial":
+                trial_scored.append(entry)
+            else:
+                active_scored.append(entry)
+        active_scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        trial_scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        if not trial_scored or not include_trial:
+            return [item[2] for item in active_scored[:limit]]
+        # Reserve at most 1 slot for a grayscale trial lesson.
+        active_cap = max(0, limit - 1) if limit >= 2 else (0 if not active_scored else 1)
+        chosen = [item[2] for item in active_scored[:active_cap]]
+        if len(chosen) < limit:
+            chosen.append(trial_scored[0][2])
+        return chosen[:limit]
 
     def record_lesson_outcome(self, lesson_ids: Iterable[int], *, fulfilled: bool) -> list[int]:
-        """Update post-injection win rates and auto-retire underperforming AI lessons."""
+        """Update post-injection win rates, auto-promote strong trials, and auto-retire weak lessons."""
         ids = [int(i) for i in lesson_ids if i]
         if not ids:
             return []
@@ -252,9 +280,24 @@ class CoachStore:
                     "SELECT source, status, injected_count, success_after, fail_after FROM lessons WHERE id = ?",
                     (lid,),
                 ).fetchone()
-                if row and row["status"] == "active" and row["source"] != "owner":
-                    trials = int(row["success_after"]) + int(row["fail_after"])
-                    if trials >= 5 and (int(row["success_after"]) / trials) < 0.35:
+                if not row or row["source"] == "owner":
+                    continue
+                trials = int(row["success_after"]) + int(row["fail_after"])
+                rate = (int(row["success_after"]) / trials) if trials > 0 else 0.0
+                if row["status"] == "trial":
+                    if trials >= 3 and rate >= 0.70:
+                        self.db.execute(
+                            "UPDATE lessons SET status = 'active', updated_at = ? WHERE id = ?",
+                            (now, lid),
+                        )
+                    elif trials >= 2 and rate <= 0.35:
+                        self.db.execute(
+                            "UPDATE lessons SET status = 'retired', updated_at = ? WHERE id = ?",
+                            (now, lid),
+                        )
+                        retired.append(lid)
+                elif row["status"] == "active":
+                    if trials >= 5 and rate < 0.35:
                         self.db.execute(
                             "UPDATE lessons SET status = 'retired', updated_at = ? WHERE id = ?",
                             (now, lid),

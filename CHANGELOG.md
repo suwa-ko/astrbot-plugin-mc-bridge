@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.0
+
+- **P2 Coach 半自动灰度进化与成功率仪表盘（Plugin `2.2.0`）**：
+  - `CoachStore` 新增 `trial` 灰度试用状态、`start_trial()` 与最多 1 条灰度经验的受控检索注入；`record_lesson_outcome()` 在灰度样本 ≥3 且胜率 ≥70% 时自动转正为 `active`，样本 ≥2 且胜率 ≤35% 时自动淘汰为 `retired`。
+  - `CoachEngine` 支持 `coach_auto_trial=true` 自动将高置信度（≥0.78）低风险反思经验推入灰度试用；`mccoach` 新增 `mccoach trial <id>` 与 `mccoach stats`（融合 `TaskMetrics` 真实完成率/达成率与低胜率告警）。
+- **P2 跨维度安全护栏与模组容器生态适配**：
+  - **下界 / 末地防呆护栏**：`find_and_sleep` 严禁在下界与末地用床（防床爆炸）；`mine_ore` 拦截末地虚空挖矿与下界误挖主世界深层矿；`_dig_to_layer` 禁止末地垂直下挖并在下界 `y <= 34` 岩浆海前止步；`combat` 在下界自动穿戴背包内的金质护甲（防猪灵仇恨）。
+  - **模组容器扩展**：`CONTAINER_BLOCKS_QUERY` 统一扩展至 `shulker_box`、`cabinet`、`basket`、`drawer`、`crate`、`item_vault` 等主流模组容器（兼容农夫乐事、机械动力、储物抽屉等整合包）。
+
 ## 2.1.0
 
 - **P0 挂机稳定性与采矿后勤闭环（Mod `1.1.0` + Plugin `2.1.0`）**：

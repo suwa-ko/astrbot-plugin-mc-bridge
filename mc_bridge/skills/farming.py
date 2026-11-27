@@ -1023,6 +1023,10 @@ class FarmingMixin:
 
     async def find_and_sleep(self, source="nearby", radius=16, remember=False, key="main"):
         """L2: 家床优先；找不到时扫描附近床，成功后可选写入家床记忆。"""
+        pre_status = await self.status()
+        pre_dim = str(pre_status.get("dimension") or "").lower()
+        if "nether" in pre_dim or "the_end" in pre_dim:
+            raise SkillError("下界和末地不能使用床（床会爆炸）")
         source = str(source or "nearby").strip().lower()
         memory = self._memory()
         if source in {"home", "home_bed", "家", "家床"}:

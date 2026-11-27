@@ -22,6 +22,15 @@ class BridgeError(RuntimeError):
     """Raised when the Minecraft client cannot execute an action."""
 
 
+def parse_capabilities(raw: Any) -> set[str]:
+    """Parse client capabilities from either Protocol 4 JSON list or Protocol 3 CSV string."""
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        return {str(x).strip() for x in raw if str(x).strip()}
+    if isinstance(raw, str):
+        return {x.strip() for x in raw.split(",") if x.strip()}
+    return set()
+
+
 def classify_goal_outcome(result, kind: str = "") -> str:
     """Separate execution completion from goal fulfilment for scheduler metrics."""
     kind = str(kind or "")
@@ -141,6 +150,8 @@ class BridgeServer:
         self.site: web.TCPSite | None = None
         self.ws: web.WebSocketResponse | None = None
         self.pending: dict[str, asyncio.Future] = {}
+        self._op_waiters: dict[str, asyncio.Future] = {}
+        self._op_completed: dict[str, dict[str, Any]] = {}
         self._send_lock = asyncio.Lock()
         self._connection_lock = asyncio.Lock()
         self._chat_jobs: set[asyncio.Task] = set()
@@ -197,6 +208,11 @@ class BridgeServer:
         for fut in pending.values():
             if not fut.done():
                 fut.set_exception(BridgeError(reason))
+        waiters, self._op_waiters = self._op_waiters, {}
+        for fut in waiters.values():
+            if not fut.done():
+                fut.set_exception(BridgeError(reason))
+        self._op_completed.clear()
 
     def _check_token(self, request: web.Request) -> bool:
         supplied = ""
@@ -279,6 +295,20 @@ class BridgeServer:
             if not isinstance(payload,dict) or payload.get('reason') not in ('player_died','actor_replaced'):return
             callback=getattr(self,'on_respawn',None)
             if callback is not None:callback(payload)
+        elif typ == "event" and data.get("event") == "operation_done":
+            payload = data.get("data")
+            if isinstance(payload, dict):
+                op_id = str(payload.get("operation_id") or "").strip()
+                if op_id:
+                    self._op_completed[op_id] = payload
+                    if len(self._op_completed) > 32:
+                        oldest = next(iter(self._op_completed))
+                        self._op_completed.pop(oldest, None)
+                    fut = self._op_waiters.pop(op_id, None)
+                    if fut is not None and not fut.done():
+                        fut.set_result(payload)
+        elif typ == "event" and data.get("event") == "operation_progress":
+            return
         elif typ == "event" and data.get("event") == "survival":
             payload = data.get("data")
             callback = self.on_survival_event
@@ -301,6 +331,28 @@ class BridgeServer:
             job = asyncio.create_task(self.on_chat(payload))
             self._chat_jobs.add(job)
             job.add_done_callback(self._finish_chat_job)
+
+    async def wait_operation(self, op_id: str, timeout: float = 5.0) -> dict[str, Any] | None:
+        """Await a Protocol 4 ``operation_done`` push event; returns None on timeout for poll fallback."""
+        key = str(op_id or "").strip()
+        if not key:
+            return None
+        cached = self._op_completed.pop(key, None)
+        if cached is not None:
+            return cached
+        if not self.connected:
+            raise BridgeError("Minecraft 客户端没有连接（先启动机器人客户端）")
+        fut = self._op_waiters.get(key)
+        if fut is None or fut.done():
+            fut = asyncio.get_running_loop().create_future()
+            self._op_waiters[key] = fut
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=max(0.05, float(timeout)))
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            if self._op_waiters.get(key) is fut and fut.done():
+                self._op_waiters.pop(key, None)
 
     async def call(self, action: str, params: dict | None = None, timeout: float = 20.0):
         if not self.connected:

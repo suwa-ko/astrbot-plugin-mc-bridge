@@ -55,5 +55,9 @@ public final class SurvivalRegression {
         require(!SurvivalRules.hostileType("genshin_nature:luminousseelie","genshin_nature:luminousseelie"),"modded passive entity excluded");
         require(SurvivalRules.hostileType("minecraft:zombie","genshin_nature:luminousseelie"),"zombie remains hostile");
         require(SurvivalRules.hostileType("minecraft:zombie",""),"empty ignore list keeps hostile");
+        require(SurvivalRules.huntableType("minecraft:cow","minecraft:cow,genshin_nature:boar"),"vanilla huntable allowed");
+        require(SurvivalRules.huntableType("genshin_nature:boar","minecraft:cow,genshin_nature:boar"),"configured modded huntable allowed");
+        require(!SurvivalRules.huntableType("minecraft:villager","minecraft:cow,genshin_nature:boar"),"villager never huntable");
+        require(!SurvivalRules.huntableType("minecraft:cow",""),"empty huntable list rejects");
     }
 }

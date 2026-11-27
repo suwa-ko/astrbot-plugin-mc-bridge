@@ -1,4 +1,4 @@
-# Minecraft Bridge Protocol 3
+# Minecraft Bridge Protocol 4（兼容 Protocol 3）
 
 AstrBot 插件与 NeoForge 客户端 Mod 之间的 WebSocket 协议。
 
@@ -16,14 +16,14 @@ AstrBot 插件与 NeoForge 客户端 Mod 之间的 WebSocket 协议。
 ```json
 {
   "type": "hello",
-  "version": "0.9.2",
-  "protocol": 3,
+  "version": "1.0.0",
+  "protocol": 4,
   "player": "PlayerName",
-  "capabilities": "inventory,equip,scan,mine_block,navigate,operation,survival_events,hunt,..."
+  "capabilities": ["inventory", "equip", "scan", "mine_block", "navigate", "operation", "operation_events", "survival_events", "hunt"]
 }
 ```
 
-> 说明：Protocol 3 实际使用逗号分隔字符串表达 `capabilities`（计划在 Protocol 4 升级为 JSON 数组）。
+> 说明：Protocol 4 使用 JSON 数组表达 `capabilities`；插件侧同时兼容 Protocol 3 的逗号分隔字符串格式。
 
 插件根据 `protocol` 和 `capabilities` 过滤工具。协议 2 的旧能力会被拒绝或降级。
 
@@ -113,6 +113,7 @@ Mod 0.8.0 / 插件 1.5.0 起，客户端还会在血量、饱食、敌人变化�
 
 | 插件 | Mod | 协议 |
 |---|---|---|
+| 1.8.x | 1.0.x | 4（兼容 3） |
 | 1.6.x | 0.9.x | 3 |
 | 1.5.x | 0.8.x | 3 |
 | 1.1.x | 0.7.x | 3 |

@@ -13,6 +13,14 @@ public final class BridgeConfig {
     public static final ModConfigSpec.IntValue BACKGROUND_FPS;
     public static final ModConfigSpec.BooleanValue AUTO_RESPAWN;
     public static final ModConfigSpec.ConfigValue<String> NON_HOSTILE_ENTITIES;
+    public static final ModConfigSpec.ConfigValue<String> HUNTABLE_ENTITIES;
+    public static final String DEFAULT_HUNTABLE_ENTITIES =
+            "minecraft:cow,minecraft:pig,minecraft:sheep,minecraft:chicken,minecraft:rabbit,"
+            + "genshin_nature:boar,genshin_nature:shroomboar,genshin_nature:snowboar,"
+            + "genshin_nature:azurecrane,genshin_nature:scarletbeakduck,genshin_nature:emeraldduck,"
+            + "genshin_nature:violetibis,genshin_nature:crow,genshin_nature:squirrel,"
+            + "genshin_nature:snowweasel,genshin_nature:redtailedweasel,genshin_nature:bootweasel,"
+            + "genshin_nature:adornedunagi,genshin_nature:redfinnedunagi,genshin_nature:deepseaunagi";
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -33,6 +41,7 @@ public final class BridgeConfig {
         BACKGROUND_FPS=builder.comment("Background client frames per second; simulation still advances at normal 20 ticks per second.").defineInRange("backgroundFps",10,5,30);
         AUTO_RESPAWN=builder.comment("Normal automatic respawn after death. Cancels old goals; does not restore items, teleport or resume work.").define("autoRespawn",true);
         NON_HOSTILE_ENTITIES=builder.comment("Comma-separated entity IDs that mods may register as MONSTER but are passive; excluded from hostiles, auto combat and survival events. Example: genshin_nature:luminousseelie").define("nonHostileEntities","genshin_nature:luminousseelie");
+        HUNTABLE_ENTITIES=builder.comment("Comma-separated entity IDs allowed as targets for the hunt action (adults, non-tamed only).").define("huntableEntities",DEFAULT_HUNTABLE_ENTITIES);
         builder.pop();
         SPEC = builder.build();
     }

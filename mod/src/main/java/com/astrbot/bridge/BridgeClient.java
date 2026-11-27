@@ -37,17 +37,18 @@ import java.util.concurrent.TimeUnit;
 /** WebSocket client living on the Minecraft client thread. */
 public final class BridgeClient {
     private static final BridgeClient INSTANCE = new BridgeClient();
-    private static final java.util.Set<String> HUNTABLE = java.util.Set.of(
-            "minecraft:cow", "minecraft:pig", "minecraft:sheep",
-            "minecraft:chicken", "minecraft:rabbit",
-            "genshin_nature:boar", "genshin_nature:shroomboar",
-            "genshin_nature:snowboar", "genshin_nature:azurecrane",
-            "genshin_nature:scarletbeakduck", "genshin_nature:emeraldduck",
-            "genshin_nature:violetibis", "genshin_nature:crow",
-            "genshin_nature:squirrel", "genshin_nature:snowweasel",
-            "genshin_nature:redtailedweasel", "genshin_nature:bootweasel",
-            "genshin_nature:adornedunagi", "genshin_nature:redfinnedunagi",
-            "genshin_nature:deepseaunagi");
+    private static final int MAX_INCOMING_FRAME_BYTES = 512 * 1024;
+    private static final String FALLBACK_VERSION = "1.0.0";
+    private static final List<String> CAPABILITIES = List.of(
+            "inventory", "equip", "unequip_armor", "craft", "workbench", "scan",
+            "mine_block", "sleep", "navigate", "operation", "operation_events",
+            "knowledge", "sense", "station", "smelt", "interact", "pickup",
+            "fresh_capture", "background_render", "look_angles", "station_recovery",
+            "manual_craft", "normal_respawn", "normal_auto_respawn", "path_feedback",
+            "collision_navigation", "move_item", "trade", "ride", "dismount", "wake",
+            "plant", "till", "jump", "dig_down", "block_context", "get_menu",
+            "interact_block", "release_use", "mine_below", "align", "use_bonemeal",
+            "ladder_assist", "navigation_break_budget", "survival_events", "hunt");
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -55,7 +56,7 @@ public final class BridgeClient {
     private final Object sendLock = new Object();
     private CompletableFuture<Void> sendTail = CompletableFuture.completedFuture(null);
     private final AtomicLong actionGeneration = new AtomicLong();
-    private final SurvivalActions survival = new SurvivalActions(this::sendResult, () -> this.socket, actionGeneration::get);
+    private final SurvivalActions survival = new SurvivalActions(this::sendResult, this::sendEvent, () -> this.socket, actionGeneration::get);
     private final SurvivalEvents survivalEvents = new SurvivalEvents();
     private String pendingCapture;
     private WebSocket captureOrigin;
@@ -108,10 +109,6 @@ public final class BridgeClient {
         if(pendingCapture!=null&&(socket!=captureOrigin||System.currentTimeMillis()>captureDeadline)) {
             if(socket==captureOrigin)sendResult(pendingCapture,false,"fresh render capture timed out",null);
             pendingCapture=null;
-        }
-        if(eatingGeneration>=0 && "survival-20261101".equals(System.getProperty("MinecraftBot.acceptance","")) && System.currentTimeMillis()>=eatingTraceNext) {
-            Minecraft mc=Minecraft.getInstance();eatingTraceNext=System.currentTimeMillis()+250;
-            AstrBotBridge.LOGGER.info("[astrbot-bridge] eat input trace key={} using={} windowActive={} context={}",mc.options.keyUse.isDown(),mc.player!=null&&mc.player.isUsingItem(),mc.isWindowActive(),mc.options.keyUse.getKeyConflictContext());
         }
         normalAutoRespawn();
         survival.tick();
@@ -208,7 +205,7 @@ public final class BridgeClient {
 
         @Override
         public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-            if (buffer.length() + data.length() > 65536) {
+            if (buffer.length() + data.length() > MAX_INCOMING_FRAME_BYTES) {
                 disconnect(webSocket);
                 webSocket.abort();
                 return null;
@@ -238,15 +235,43 @@ public final class BridgeClient {
         }
     }
 
+    static JsonArray capabilitiesArray() {
+        JsonArray caps = new JsonArray();
+        for (String cap : CAPABILITIES) {
+            caps.add(cap);
+        }
+        return caps;
+    }
+
+    private static String modVersion() {
+        try {
+            return net.neoforged.fml.ModList.get()
+                    .getModContainerById(AstrBotBridge.MOD_ID)
+                    .map(container -> container.getModInfo().getVersion().toString())
+                    .orElse(FALLBACK_VERSION);
+        } catch (Throwable ignored) {
+            return FALLBACK_VERSION;
+        }
+    }
+
+    private static String huntableEntitiesCsv() {
+        try {
+            String configured = BridgeConfig.HUNTABLE_ENTITIES.get();
+            return (configured == null || configured.isBlank()) ? BridgeConfig.DEFAULT_HUNTABLE_ENTITIES : configured;
+        } catch (Throwable ignored) {
+            return BridgeConfig.DEFAULT_HUNTABLE_ENTITIES;
+        }
+    }
+
     private void sendHello(WebSocket ws) {
         try {
             JsonObject hello = new JsonObject();
             hello.addProperty("type", "hello");
             hello.addProperty("client", "astrbot-bridge");
-            hello.addProperty("version", "0.8.0");
+            hello.addProperty("version", modVersion());
             hello.addProperty("local_collect_resources","logs,stone,coal,iron,wheat");
-            hello.addProperty("protocol", 3);
-            hello.addProperty("capabilities", "inventory,equip,unequip_armor,craft,workbench,scan,mine_block,sleep,navigate,operation,knowledge,sense,station,smelt,interact,pickup,fresh_capture,background_render,look_angles,station_recovery,manual_craft,normal_respawn,normal_auto_respawn,path_feedback,collision_navigation,move_item,trade,ride,dismount,wake,plant,till,jump,dig_down,block_context,get_menu,interact_block,release_use,mine_below,align,use_bonemeal,ladder_assist,navigation_break_budget,survival_events,hunt");
+            hello.addProperty("protocol", 4);
+            hello.add("capabilities", capabilitiesArray());
             Minecraft mc = Minecraft.getInstance();
             hello.addProperty(
                     "player",
@@ -562,7 +587,7 @@ public final class BridgeClient {
                             if (living instanceof AgeableMob ageable && ageable.isBaby()) return false;
                             if (living instanceof TamableAnimal tame && tame.isTame()) return false;
                             String key = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
-                            if (!HUNTABLE.contains(key)) return false;
+                            if (!SurvivalRules.huntableType(key, huntableEntitiesCsv())) return false;
                             if (!uuid.isEmpty()) return e.getUUID().toString().equals(uuid);
                             return type.isEmpty() || key.contains(type);
                         }));
@@ -762,6 +787,14 @@ public final class BridgeClient {
         send(envelope);
     }
 
+    private void sendEvent(String eventName, JsonObject data) {
+        JsonObject envelope = new JsonObject();
+        envelope.addProperty("type", "event");
+        envelope.addProperty("event", eventName);
+        envelope.add("data", data == null ? new JsonObject() : data);
+        send(envelope);
+    }
+
     private void sendResult(String id, boolean ok, String error, JsonObject data) {
         JsonObject result = new JsonObject();
         result.addProperty("type", "result");
@@ -803,7 +836,6 @@ public final class BridgeClient {
             if (socket != null) return;
             survival.cancel("bridge disconnected");
             mc.options.keyUse.setDown(false);
-            if (mc.player != null) mc.player.connection.sendChat("#stop");
         });
     }
 

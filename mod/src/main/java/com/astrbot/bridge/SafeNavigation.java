@@ -72,6 +72,21 @@ final class SafeNavigation {
         names.clear();
         allowBreak=false;
     }
+    /** Cancel active Baritone pathing via API reflection without sending "#stop" to game chat. */
+    boolean cancelBaritone() {
+        try {
+            Object provider = Class.forName("baritone.api.BaritoneAPI").getMethod("getProvider").invoke(null);
+            if (provider == null) return false;
+            Object baritone = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+            if (baritone == null) return false;
+            Object pathing = baritone.getClass().getMethod("getPathingBehavior").invoke(baritone);
+            if (pathing == null) return false;
+            pathing.getClass().getMethod("cancelEverything").invoke(pathing);
+            return true;
+        } catch (ReflectiveOperationException | RuntimeException ex) {
+            return false;
+        }
+    }
     private Field settingValue(Object setting) throws ReflectiveOperationException {
         try { return setting.getClass().getField("value"); }
         catch(NoSuchFieldException standalone) {

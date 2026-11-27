@@ -60,4 +60,12 @@ final class SurvivalRules {
         }
         return true;
     }
+    static boolean huntableType(String typeId, String allowedCsv) {
+        String id = typeId == null ? "" : typeId.trim();
+        if (id.isEmpty() || allowedCsv == null || allowedCsv.isBlank()) return false;
+        for (String part : allowedCsv.split(",")) {
+            if (part.trim().equalsIgnoreCase(id)) return true;
+        }
+        return false;
+    }
 }

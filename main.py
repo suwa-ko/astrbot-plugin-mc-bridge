@@ -68,7 +68,7 @@ from .reply_route import ReplyRoute, REPLY_ROUTE, UNSET, event_route, game_route
 from .vision import vision_input
 
 from .mc_bridge.context import CONTROL_EPOCH, CURRENT_EVENT, PLUGIN_NAME, RESOURCE_MENTION
-from .mc_bridge.server import BridgeError, BridgeServer, QueuedTask, _fmt_status, classify_goal_outcome
+from .mc_bridge.server import BridgeError, BridgeServer, QueuedTask, _fmt_status, classify_goal_outcome, parse_capabilities
 from .mc_bridge.runtime import RuntimeMixin
 from .mc_bridge.async_memory import AsyncMemoryStore
 
@@ -507,7 +507,7 @@ class McBridgePlugin(RuntimeMixin, Star):
             return {"__error__": "请求已停止或被新的控制操作中断"}
         if action in {"inventory", "equip", "craft", "workbench", "scan", "mine_block", "sleep", "operation", "navigate"} and self.bridge.client_info.get("protocol", 1) < 3:
             return {"__error__": "此动作需要0.3.0 Mod / 协议3，请重新启动更新后的客户端"}
-        if action in {'knowledge','sense','station','smelt','interact','pickup','move_item','trade','ride','dismount','wake','plant','dig_down','block_context','get_menu','interact_block','release_use','mine_below','align','unequip_armor','till','jump','use_bonemeal','hunt'} and action not in str(self.bridge.client_info.get('capabilities','')).split(','):
+        if action in {'knowledge','sense','station','smelt','interact','pickup','move_item','trade','ride','dismount','wake','plant','dig_down','block_context','get_menu','interact_block','release_use','mine_below','align','unequip_armor','till','jump','use_bonemeal','hunt'} and action not in parse_capabilities(self.bridge.client_info.get('capabilities')):
             return {'__error__':'此功能需要0.4.0或更新的客户端 Mod，请安装新版后重连'}
         if not readonly and self.bridge.connected and self.bridge.client_info.get("protocol", 1) < 2:
             return {"__error__": "客户端协议过旧，请安装 0.2.0 Mod 后重新进入游戏"}
@@ -537,7 +537,7 @@ class McBridgePlugin(RuntimeMixin, Star):
         return None
 
     async def _run_operation(self, action: str, params: dict, seconds: float = 10, timeout: float = 10) -> dict:
-        """Start a client operation and poll it to a terminal phase."""
+        """Start a client operation and await push completion (Protocol 4) or poll fallback (Protocol 3)."""
         result = await self._call(action, params, timeout=timeout)
         err = self._err(result)
         if err:
@@ -546,10 +546,23 @@ class McBridgePlugin(RuntimeMixin, Star):
             raise SurvivalError("客户端没有确认动作启动")
         identifier = result["operation_id"]
         deadline = time.monotonic() + max(1.0, float(seconds))
+        use_push = (
+            "operation_events" in parse_capabilities(self.bridge.client_info.get("capabilities"))
+            and callable(getattr(self.bridge, "wait_operation", None))
+        )
         try:
             while time.monotonic() < deadline:
-                await asyncio.sleep(0.3)
-                data = await self._call("operation", {"operation_id": identifier}, timeout=8)
+                data = None
+                if use_push:
+                    remaining = max(0.05, deadline - time.monotonic())
+                    try:
+                        data = await self.bridge.wait_operation(identifier, timeout=min(remaining, 5.0))
+                    except BridgeError as exc:
+                        raise SurvivalError(str(exc)) from exc
+                else:
+                    await asyncio.sleep(0.3)
+                if data is None:
+                    data = await self._call("operation", {"operation_id": identifier}, timeout=8)
                 err = self._err(data)
                 if err:
                     raise SurvivalError(err)
@@ -912,7 +925,7 @@ class McBridgePlugin(RuntimeMixin, Star):
             pitch(float): 可选俯仰角-90至90；0平视，正数向下。
         """
         if yaw!=999 or pitch!=999:
-            if 'look_angles' not in str(self.bridge.client_info.get('capabilities','')).split(','):return '自由视角需要0.4.1客户端'
+            if 'look_angles' not in parse_capabilities(self.bridge.client_info.get('capabilities')):return '自由视角需要0.4.1客户端'
             if self._active_task is not None:return '正在执行动作，暂不改变摄像头'
             if not math.isfinite(float(yaw)+float(pitch)):return '视角参数无效'
             if yaw==999 or pitch==999:
@@ -1147,7 +1160,7 @@ class McBridgePlugin(RuntimeMixin, Star):
         try:
             _, encoded, observation = await self._capture(with_observation=True)
             target=observation.get('crosshair',{}).get('id','')
-            if target and not target.startswith('minecraft:') and 'knowledge' in str(self.bridge.client_info.get('capabilities','')).split(','):
+            if target and not target.startswith('minecraft:') and 'knowledge' in parse_capabilities(self.bridge.client_info.get('capabilities')):
                 detail=await self._call('knowledge',{'kind':'items','query':target,'limit':1},timeout=10)
                 if not self._err(detail) and detail.get('results'):
                     row=detail['results'][0]
@@ -1920,7 +1933,7 @@ class McBridgePlugin(RuntimeMixin, Star):
 
     async def _try_ladder_assist(self, x, y, z):
         """Try one bounded local ladder-entry assist, then reissue the same goto."""
-        capabilities = str(self.bridge.client_info.get("capabilities", "")).split(",")
+        capabilities = parse_capabilities(self.bridge.client_info.get("capabilities"))
         if "ladder_assist" not in capabilities:
             return False
         try:
@@ -2082,7 +2095,7 @@ class McBridgePlugin(RuntimeMixin, Star):
     async def _resolve_navigation_target(self, x, y, z):
         """Resolve a block coordinate to a standable cell before queuing goto."""
         x, y, z = int(x), int(y), int(z)
-        capabilities = str(self.bridge.client_info.get("capabilities", "")).split(",")
+        capabilities = parse_capabilities(self.bridge.client_info.get("capabilities"))
         if "block_context" not in capabilities:
             return (x, y, z), {"adjusted": False, "source": "capability_missing"}
         context = await self._call("block_context", {"x": x, "y": y, "z": z}, timeout=10)
@@ -4020,7 +4033,7 @@ class McBridgePlugin(RuntimeMixin, Star):
             "l1": l1,
             "l2": l2,
             "client_protocol": self.bridge.client_info.get("protocol", 1),
-            "client_capabilities": str(self.bridge.client_info.get("capabilities", "")).split(","),
+            "client_capabilities": sorted(parse_capabilities(self.bridge.client_info.get("capabilities"))),
         }, ensure_ascii=False)
 
     @filter.llm_tool(name="mc_plan")

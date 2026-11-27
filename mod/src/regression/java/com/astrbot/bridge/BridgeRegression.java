@@ -56,7 +56,14 @@ public final class BridgeRegression {
         Field http = BridgeClient.class.getDeclaredField("http");
         http.setAccessible(true);
         ((java.net.http.HttpClient) http.get(client)).close();
-        System.out.println("PASS: command allowlist, serialized sends, stale connection callbacks");
+        var caps = BridgeClient.capabilitiesArray();
+        boolean hasOpEvents = false, hasHunt = false;
+        for (var el : caps) {
+            if ("operation_events".equals(el.getAsString())) hasOpEvents = true;
+            if ("hunt".equals(el.getAsString())) hasHunt = true;
+        }
+        check(hasOpEvents && hasHunt, "Protocol 4 capabilities array missing operation_events or hunt");
+        System.out.println("PASS: command allowlist, serialized sends, stale connection callbacks, protocol 4 capabilities");
     }
 
     private static final class FakeSocket implements WebSocket {

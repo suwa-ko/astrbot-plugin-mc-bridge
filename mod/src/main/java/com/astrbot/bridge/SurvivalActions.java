@@ -84,13 +84,15 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 /** Server-authoritative inventory and block interactions. Long work is tick-driven and cancellable. */
 final class SurvivalActions {
     interface Reply { void send(String id, boolean ok, String error, JsonObject data); }
+    interface EventSink { void emit(String event, JsonObject data); }
     private final Reply reply;
+    private final EventSink events;
     private final Supplier<java.net.http.WebSocket> connection;
     private final LongSupplier generation;
     private final SafeNavigation navigation = new SafeNavigation();
     private final NavigationFeedback pathFeedback=new NavigationFeedback();
     private final LinkedHashMap<String,JsonObject> history = new LinkedHashMap<>();
-    private Job job;
+    private OperationJob job;
     private BlockPos navigationTarget;
     private LocalPlayer navigationActor;
     private Level navigationWorld;
@@ -105,27 +107,17 @@ final class SurvivalActions {
     private static final Set<String> IRON = Set.of("minecraft:iron_ore","minecraft:deepslate_iron_ore");
     private static final Set<String> SOIL = Set.of("minecraft:dirt","minecraft:grass_block","minecraft:podzol","minecraft:rooted_dirt","minecraft:coarse_dirt","minecraft:moss_block");
 
-    private static final class Job {
-        String id, kind, item="";
-        long generation, started=System.currentTimeMillis(), next, deadline, stageDeadline;
-        java.net.http.WebSocket origin;
-        int stage, baseline, count, menu=-1, completed;
-        BlockPos pos;
-        BlockState oldBlock;
-        Level world;
-        RecipeHolder<?> recipe;
-        Direction face=Direction.UP;
-        float progress;
-        boolean collectOnly;
-        boolean recoverStation;
-        boolean manualRecipe;
-        ItemEntity drop;
-        Vec3 originPosition;
-        JsonObject detail=new JsonObject();
-    }
 
+    SurvivalActions(Reply reply, EventSink events, Supplier<java.net.http.WebSocket> connection, LongSupplier generation) {
+        this.reply=reply; this.events=events; this.connection=connection; this.generation=generation;
+    }
     SurvivalActions(Reply reply, Supplier<java.net.http.WebSocket> connection, LongSupplier generation) {
-        this.reply=reply; this.connection=connection; this.generation=generation;
+        this(reply, (ev, data) -> {}, connection, generation);
+    }
+    private void stopBaritone(LocalPlayer player) {
+        if (!navigation.cancelBaritone() && player != null && player.connection != null) {
+            stopBaritone(player);
+        }
     }
     static boolean handles(String action) {
         return Set.of("inventory","equip","unequip_armor","craft","workbench","sleep","scan","scan_blocks","scan_entities","inspect_block","block_context","get_menu","mine_block","mine_at","mine_below","place_at","use_item","use_bonemeal","release_use","interact_block","drop_item","select_slot","container","sort_inventory","move_item","trade","ride","dismount","wake","plant","till","dig_down","jump","align","operation","navigate","station","smelt","interact","pickup","ladder_assist").contains(action);
@@ -140,7 +132,7 @@ final class SurvivalActions {
         mc.options.keyUse.setDown(false);
         mc.options.keyAttack.setDown(false);
         if(job!=null) finish(false,reason);
-        if(mc.player!=null)mc.player.connection.sendChat("#stop");
+        stopBaritone(mc.player);
         navigation.restore();
     }
     void prepareNavigation() throws ReflectiveOperationException {navigation.begin();}
@@ -190,7 +182,7 @@ final class SurvivalActions {
             pathFeedback.end();
             navigation.restore();
             if(mc.gameMode!=null)mc.gameMode.stopDestroyBlock();
-            if(player.connection!=null)player.connection.sendChat("#stop");
+            stopBaritone(player);
             AstrBotBridge.LOGGER.info("[astrbot-bridge] navigation break budget exhausted after {} blocks",count);
         }
     }
@@ -219,7 +211,7 @@ final class SurvivalActions {
         try{
             // Baritone may stop at the edge of the last cell. One bounded, collision-proven
             // ordinary sneak step completes it; the caller still verifies actual coordinates.
-            localBegin(player,"align",params);player.connection.sendChat("#stop");
+            localBegin(player,"align",params);stopBaritone(player);
         }catch(RuntimeException unavailable){/* Keep the caller's original bounded failure path. */}
     }
 
@@ -230,7 +222,7 @@ final class SurvivalActions {
     String localBegin(LocalPlayer player,String action,JsonObject p){
         if(job!=null||!Set.of("mine_block","pickup","craft","workbench","smelt","align").contains(action))throw new IllegalStateException("local child action unavailable");
         if(player.isDeadOrDying()||player.isSleeping()||player.isCreative()||player.isSpectator())throw new IllegalStateException("survival player unavailable");
-        Job j=new Job();j.id=java.util.UUID.randomUUID().toString();j.kind=action;j.generation=generation.getAsLong();j.origin=connection.get();j.world=player.level();j.deadline=j.started+26000;
+        OperationJob j=new OperationJob();j.id=java.util.UUID.randomUUID().toString();j.kind=action;j.generation=generation.getAsLong();j.origin=connection.get();j.world=player.level();j.deadline=j.started+26000;
         switch(action){case "mine_block"->beginMine(j,player,p);case "pickup"->beginPickup(j,player,p);case "craft"->beginCraft(j,player,p);case "workbench"->beginWorkbench(j,player,p);case "smelt"->beginSmelt(j,player,p);case "align"->beginAlign(j,player,p);default->throw new IllegalArgumentException("unknown child");}
         job=j;return j.id;
     }
@@ -305,7 +297,7 @@ final class SurvivalActions {
                 player.connection.sendChat("#goto "+target.getX()+" "+target.getY()+" "+target.getZ());
                 JsonObject result=new JsonObject();result.addProperty("phase","accepted");result.addProperty("allow_break",allowBreak);result.addProperty("max_break",maxBreak);reply.send(id,true,null,result);return;
             }
-            Job j=new Job();j.id=id;j.kind=action;j.generation=generation.getAsLong();j.origin=connection.get();j.world=player.level();j.deadline=j.started+26000;
+            OperationJob j=new OperationJob();j.id=id;j.kind=action;j.generation=generation.getAsLong();j.origin=connection.get();j.world=player.level();j.deadline=j.started+26000;
             switch(action) {
                 case "inventory" -> beginInventory(j,player,p);
                 case "equip" -> beginEquip(j,player,p);
@@ -343,7 +335,7 @@ final class SurvivalActions {
             tickBreakBudget();
         }
         if(job==null) return;
-        Minecraft mc=Minecraft.getInstance();Job j=job;long now=System.currentTimeMillis();
+        Minecraft mc=Minecraft.getInstance();OperationJob j=job;long now=System.currentTimeMillis();
         if(mc.player==null || j.origin!=connection.get() || j.generation!=generation.getAsLong()) {cancel("action cancelled by stop/disconnect");return;}
         if(mc.player.isDeadOrDying()) {cancel("player died");return;}
         if(mc.player.level()!=j.world) {cancel("world changed");return;}
@@ -390,17 +382,25 @@ final class SurvivalActions {
                 }
                 default -> throw new IllegalStateException("unknown running job");
             }
+            if (job == j) emitProgressIfChanged(j);
         } catch(Exception ex) { finish(false,ex.getMessage()); }
     }
 
-    private JsonObject progress(Job j,String phase) {
-        JsonObject r=j.detail.deepCopy();r.addProperty("operation_id",j.id);r.addProperty("kind",j.kind);r.addProperty("phase",phase);return r;
+    private JsonObject progress(OperationJob j,String phase) {
+        return j.snapshot(phase);
+    }
+    private void emitProgressIfChanged(OperationJob j) {
+        if (j != null && j.stage != j.lastEmittedStage) {
+            j.lastEmittedStage = j.stage;
+            events.emit("operation_progress", progress(j, "running"));
+        }
     }
     private void finish(boolean success,String error) {
-        Job j=job;if(j==null)return;
+        OperationJob j=job;if(j==null)return;
         JsonObject result=progress(j,success?"completed":"failed");result.addProperty("success",success);
         if(error!=null)result.addProperty("error",error);
         history.put(j.id,result);while(history.size()>16)history.remove(history.keySet().iterator().next());job=null;
+        events.emit("operation_done", result);
         Minecraft mc=Minecraft.getInstance();
         if(j.kind.equals("pickup")||j.kind.equals("align")||j.kind.equals("ladder_assist")){mc.options.keyUp.setDown(false);mc.options.keyShift.setDown(false);}
         if((j.kind.equals("jump")||j.kind.equals("ladder_assist"))&&mc.player!=null){mc.player.input.jumping=false;mc.options.keyJump.setDown(false);}
@@ -487,7 +487,7 @@ final class SurvivalActions {
         for(int i=0;i<9;i++)if(player.getInventory().getItem(i).isEmpty()){destination=i;break;}
         click(player,slot(player,inventoryIndex).index,destination,ClickType.SWAP);return destination;
     }
-    private void beginInventory(Job j,LocalPlayer player,JsonObject p) {
+    private void beginInventory(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);String op=text(p,"operation","view");int source=integer(p,"slot",-1),dest=integer(p,"hotbar",-1);
         if(op.equals("food")) {
             int best=-1,bestNutrition=-1;
@@ -505,7 +505,7 @@ final class SurvivalActions {
         j.detail.addProperty("slot",source);j.detail.addProperty("hotbar",dest);
         j.item=BuiltInRegistries.ITEM.getKey(player.getInventory().getItem(dest).getItem()).toString();j.next=j.started+900;j.count=dest;
     }
-    private void beginEquip(Job j,LocalPlayer player,JsonObject p) {
+    private void beginEquip(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);String requested=text(p,"item","best");int chosen=-1,armorIndex=-1;double gain=0;
         for(int i=0;i<36;i++) {
             ItemStack s=player.getInventory().getItem(i);if(!(s.getItem() instanceof ArmorItem armor))continue;
@@ -526,7 +526,7 @@ final class SurvivalActions {
         if(!player.containerMenu.getCarried().isEmpty())throw new IllegalStateException("equipment cursor unexpectedly nonempty; stop and inspect");
         j.detail.addProperty("item",j.item);j.detail.addProperty("equipped_slot",armorIndex);j.next=j.started+900;
     }
-    private void beginUnequipArmor(Job j,LocalPlayer player,JsonObject p) {
+    private void beginUnequipArmor(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);String slotName=text(p,"slot","head");
         int armorIndex=armorInventoryIndex(slotName);Slot source=slot(player,armorIndex);
         ItemStack stack=source.getItem();
@@ -548,20 +548,20 @@ final class SurvivalActions {
         };
     }
 
-    private void verifyUnequipArmor(Job j,LocalPlayer player) {
+    private void verifyUnequipArmor(OperationJob j,LocalPlayer player) {
         if(!slot(player,j.count).getItem().isEmpty())throw new IllegalStateException("armor slot is still occupied");
         if(find(player,j.item)<0)throw new IllegalStateException("unequipped armor was not found in inventory");
         j.detail.addProperty("unequipped",true);finish(true,null);
     }
 
-    private void verifyInventory(Job j,LocalPlayer player) {
+    private void verifyInventory(OperationJob j,LocalPlayer player) {
         if(!player.containerMenu.getCarried().isEmpty())throw new IllegalStateException("cursor not empty after operation");
         String actual=BuiltInRegistries.ITEM.getKey(player.getInventory().getItem(j.count).getItem()).toString();
         if(!actual.equals(j.item))throw new IllegalStateException("server did not confirm inventory/equipment change");
         j.detail.addProperty("item",actual);finish(true,null);
     }
 
-    private void beginCraft(Job j,LocalPlayer player,JsonObject p) {
+    private void beginCraft(OperationJob j,LocalPlayer player,JsonObject p) {
         if(!(player.containerMenu instanceof InventoryMenu||player.containerMenu instanceof CraftingMenu)||!player.containerMenu.getCarried().isEmpty())
             throw new IllegalStateException("craft requires inventory or crafting table and empty cursor");
         for(int i=1;i<=(player.containerMenu instanceof CraftingMenu?9:4);i++)if(!player.containerMenu.getSlot(i).getItem().isEmpty())
@@ -589,7 +589,7 @@ final class SurvivalActions {
         j.manualRecipe=!player.getRecipeBook().contains(j.recipe);
         placeCraftRecipe(j,player);j.next=j.started+250;j.stage=0;j.stageDeadline=j.started+2500;
     }
-    private void placeCraftRecipe(Job j,LocalPlayer player) {
+    private void placeCraftRecipe(OperationJob j,LocalPlayer player) {
         if(!j.manualRecipe){Minecraft.getInstance().gameMode.handlePlaceRecipe(j.menu,j.recipe,false);return;}
         int grid=player.containerMenu instanceof CraftingMenu?3:2;
         for(int i=1;i<=grid*grid;i++)if(player.containerMenu.getSlot(i).hasItem())throw new IllegalStateException("manual crafting grid is occupied; refusing to replace materials");
@@ -603,7 +603,7 @@ final class SurvivalActions {
         for(int i:indices){int from=slot(player,source[i]).index;int to=SurvivalRules.craftSlot(grid,width,i);click(player,from,0,ClickType.PICKUP);click(player,to,1,ClickType.PICKUP);if(!player.containerMenu.getCarried().isEmpty())click(player,from,0,ClickType.PICKUP);if(!player.containerMenu.getCarried().isEmpty())throw new IllegalStateException("manual crafting cursor not empty; inspect before retrying");}
         j.detail.addProperty("placement","manual_server_recipe");
     }
-    private void tickCraft(Job j,LocalPlayer player,long now) {
+    private void tickCraft(OperationJob j,LocalPlayer player,long now) {
         if(player.containerMenu.containerId!=j.menu)throw new IllegalStateException("crafting menu changed");
         if(j.stage==0) {
             ItemStack output=player.containerMenu.getSlot(0).getItem();
@@ -618,7 +618,7 @@ final class SurvivalActions {
         }
     }
 
-    private void beginWorkbench(Job j,LocalPlayer player,JsonObject p) {
+    private void beginWorkbench(OperationJob j,LocalPlayer player,JsonObject p) {
         String mode=text(p,"operation","open");j.pos=position(p);j.detail.add("position",xyz(j.pos));
         if(mode.equals("open")) {
             if(!player.level().getBlockState(j.pos).is(Blocks.CRAFTING_TABLE))throw new IllegalStateException("目标不是工作台");
@@ -632,11 +632,11 @@ final class SurvivalActions {
         } else throw new IllegalArgumentException("workbench mode must be open or place");
         j.next=j.started+700;j.deadline=j.started+7000;
     }
-    private void tickWorkbench(Job j,LocalPlayer player) {
+    private void tickWorkbench(OperationJob j,LocalPlayer player) {
         boolean done=j.stage==0?player.containerMenu instanceof CraftingMenu:player.level().getBlockState(j.pos).is(Blocks.CRAFTING_TABLE);
         if(done){j.detail.addProperty("open",j.stage==0);j.detail.addProperty("placed",j.stage==1);finish(true,null);}
     }
-    private void beginStation(Job j,LocalPlayer player,JsonObject p) {
+    private void beginStation(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.pos=position(p);j.item=SurvivalRules.itemId(text(p,"item",""));
         if(!Set.of("minecraft:furnace","farmersdelight:cutting_board","minecraft:torch").contains(j.item))throw new IllegalArgumentException("unsupported station; arbitrary block placement is disabled");
         if(text(p,"operation","place").equals("recover")) {
@@ -650,7 +650,7 @@ final class SurvivalActions {
         select(player,hotbar(player,source));useTop(player,j.pos.below());j.next=j.started+700;j.deadline=j.started+7000;
         j.detail.addProperty("item",j.item);j.detail.add("position",xyz(j.pos));
     }
-    private void beginInteract(Job j,LocalPlayer player,JsonObject p) {
+    private void beginInteract(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.pos=position(p);String mode=text(p,"operation","open");
         if(!Set.of("open","close").contains(mode))throw new IllegalArgumentException("only explicit door open/close is supported");
         BlockState state=player.level().getBlockState(j.pos);
@@ -663,7 +663,7 @@ final class SurvivalActions {
         if(job==null||!Set.of("pickup","align").contains(job.kind)||job.origin!=connection.get()||job.generation!=generation.getAsLong())return;
         Minecraft mc=Minecraft.getInstance();mc.options.keyUp.setDown(true);mc.options.keyShift.setDown(true);
     }
-    private void beginMineBelow(Job j,LocalPlayer player) {
+    private void beginMineBelow(OperationJob j,LocalPlayer player) {
         JsonObject p=new JsonObject();p.addProperty("depth",1);beginDigDown(j,player,p);
     }
 
@@ -679,7 +679,7 @@ final class SurvivalActions {
         JsonObject result=new JsonObject();result.addProperty("block",blockId(state));result.addProperty("interacted",true);return result;
     }
 
-    private void beginDigDown(Job j,LocalPlayer player,JsonObject p) {
+    private void beginDigDown(OperationJob j,LocalPlayer player,JsonObject p) {
         int depth=Math.max(1,Math.min(8,integer(p,"depth",3)));
         j.count=depth;
         j.detail.addProperty("requested_depth",depth);
@@ -687,7 +687,7 @@ final class SurvivalActions {
         digDownLayer(j,player);
     }
 
-    private void digDownLayer(Job j,LocalPlayer player) {
+    private void digDownLayer(OperationJob j,LocalPlayer player) {
         if(!player.onGround()||player.isInWater()||player.isInLava())throw new IllegalStateException("player is not standing safely for downward digging");
         if(Minecraft.getInstance().screen!=null)throw new IllegalStateException("close the current screen before digging");
         BlockPos target=player.blockPosition().below();Level level=player.level();
@@ -713,7 +713,7 @@ final class SurvivalActions {
         j.detail.addProperty("current_block",blockId(state));j.detail.add("current_position",xyz(target));
     }
 
-    private void tickDigDown(Job j,LocalPlayer player,long now) {
+    private void tickDigDown(OperationJob j,LocalPlayer player,long now) {
         BlockState current=player.level().getBlockState(j.pos);
         if(!current.equals(j.oldBlock)) {
             if(!current.isAir()&&!current.getFluidState().isEmpty())throw new IllegalStateException("shaft block changed to a fluid or solid block");
@@ -737,7 +737,7 @@ final class SurvivalActions {
         }
     }
 
-    private void beginPlant(Job j,LocalPlayer player,JsonObject p) {
+    private void beginPlant(OperationJob j,LocalPlayer player,JsonObject p) {
         j.pos=position(p);Level level=player.level();
         if(!level.getBlockState(j.pos).is(Blocks.FARMLAND))throw new IllegalStateException("plant target must be farmland");
         BlockPos above=j.pos.above();
@@ -752,14 +752,14 @@ final class SurvivalActions {
         j.detail.add("position",xyz(j.pos));j.detail.addProperty("item",item);j.stage=0;j.next=j.started+500;j.deadline=j.started+4000;
     }
 
-    private void tickPlant(Job j,LocalPlayer player,long now) {
+    private void tickPlant(OperationJob j,LocalPlayer player,long now) {
         BlockState above=player.level().getBlockState(j.pos.above());
         if(above.getBlock() instanceof CropBlock){j.detail.addProperty("planted",true);finish(true,null);return;}
         if(now>j.deadline)throw new IllegalStateException("planting was not confirmed");
         j.next=now+200;
     }
 
-    private void beginTill(Job j,LocalPlayer player,JsonObject p) {
+    private void beginTill(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.pos=position(p);Level level=player.level();
         BlockState state=level.getBlockState(j.pos);
         if(!(state.is(Blocks.DIRT)||state.is(Blocks.GRASS_BLOCK)||state.is(Blocks.DIRT_PATH)))
@@ -781,7 +781,7 @@ final class SurvivalActions {
         j.detail.add("position",xyz(j.pos));j.detail.addProperty("item",used);j.next=j.started+400;j.deadline=j.started+3000;
     }
 
-    private void tickTill(Job j,LocalPlayer player,long now) {
+    private void tickTill(OperationJob j,LocalPlayer player,long now) {
         BlockState state=player.level().getBlockState(j.pos);
         if(state.is(Blocks.FARMLAND)){j.detail.addProperty("tilled",true);finish(true,null);return;}
         if(!(state.is(Blocks.DIRT)||state.is(Blocks.GRASS_BLOCK)||state.is(Blocks.DIRT_PATH)))
@@ -790,7 +790,7 @@ final class SurvivalActions {
         j.next=now+150;
     }
 
-    private void beginBonemeal(Job j,LocalPlayer player,JsonObject p) {
+    private void beginBonemeal(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.pos=position(p);Level level=player.level();
         BlockState state=level.getBlockState(j.pos);
         if(!(state.getBlock() instanceof CropBlock crop))
@@ -807,7 +807,7 @@ final class SurvivalActions {
         j.next=j.started+300;j.deadline=j.started+2500;
     }
 
-    private void tickBonemeal(Job j,LocalPlayer player,long now) {
+    private void tickBonemeal(OperationJob j,LocalPlayer player,long now) {
         BlockState state=player.level().getBlockState(j.pos);
         if(!state.toString().equals(j.oldBlock.toString())) {
             j.detail.addProperty("block_after",blockId(state));
@@ -818,7 +818,7 @@ final class SurvivalActions {
         j.next=now+150;
     }
 
-    private void beginJump(Job j,LocalPlayer player) {
+    private void beginJump(OperationJob j,LocalPlayer player) {
         if(!player.onGround()||player.isInWater()||player.isInLava())
             throw new IllegalStateException("jump requires standing on ground and out of water/lava");
         j.originPosition=player.position();player.input.jumping=true;
@@ -826,7 +826,7 @@ final class SurvivalActions {
         j.detail.addProperty("start_y",j.originPosition.y);j.next=j.started+50;j.deadline=j.started+1200;
     }
 
-    private void tickJump(Job j,LocalPlayer player,long now) {
+    private void tickJump(OperationJob j,LocalPlayer player,long now) {
         if(!player.onGround()||player.getY()>j.originPosition.y+0.05) {
             player.input.jumping=false;Minecraft.getInstance().options.keyJump.setDown(false);
             j.detail.addProperty("jumped",true);finish(true,null);return;
@@ -835,7 +835,7 @@ final class SurvivalActions {
         j.next=now+50;
     }
 
-    private void beginPickup(Job j,LocalPlayer player,JsonObject p) {
+    private void beginPickup(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.item=SurvivalRules.itemId(text(p,"item",""));
         java.util.UUID wanted=java.util.UUID.fromString(text(p,"entity_uuid",""));
         j.drop=player.level().getEntitiesOfClass(ItemEntity.class,player.getBoundingBox().inflate(2.5)).stream()
@@ -845,23 +845,23 @@ final class SurvivalActions {
         if(horizontal<.05)throw new IllegalStateException("PICKUP_UNAVAILABLE: no safe horizontal approach");
         BlockPos ahead=BlockPos.containing(player.getX()+direction.x/horizontal*.5,Math.floor(player.getY()+.125),player.getZ()+direction.z/horizontal*.5);
         if(!standable(player.level(),ahead))throw new IllegalStateException("PICKUP_UNAVAILABLE: forward step has no safe floor/headroom");
-        player.connection.sendChat("#stop");player.lookAt(EntityAnchorArgument.Anchor.EYES,j.drop.position());
+        stopBaritone(player);player.lookAt(EntityAnchorArgument.Anchor.EYES,j.drop.position());
         j.originPosition=player.position();j.baseline=count(player,j.item);j.next=j.started+100;j.deadline=j.started+2200;
         j.detail.addProperty("item",j.item);
     }
-    private void beginAlign(Job j,LocalPlayer player,JsonObject p){
+    private void beginAlign(OperationJob j,LocalPlayer player,JsonObject p){
         normalInventory(player);j.pos=position(p);double feet=TerrainQueries.height(player,j.pos,Set.of());
         Vec3 target=new Vec3(j.pos.getX()+.5,feet,j.pos.getZ()+.5);
         if(!Double.isFinite(feet)||!player.onGround()||Math.hypot(player.getX()-target.x,player.getZ()-target.z)>1.2||Math.abs(player.getY()-feet)>.65)throw new IllegalStateException("alignment requires a nearby verified standing cell");
         Vec3 from=player.position();for(int i=1;i<=8;i++){Vec3 step=from.lerp(target,i/8.0);BlockPos cell=new BlockPos((int)Math.floor(step.x),TerrainQueries.feetBlockY(step.y),(int)Math.floor(step.z));if(!localStandable(player,cell,Set.of()))throw new IllegalStateException("alignment route is not safe");}
         j.originPosition=from;j.deadline=j.started+1800;j.next=j.started;player.lookAt(EntityAnchorArgument.Anchor.EYES,new Vec3(target.x,player.getEyeY(),target.z));
     }
-    private void tickAlign(Job j,LocalPlayer player,long now){
+    private void tickAlign(OperationJob j,LocalPlayer player,long now){
         if(Math.hypot(player.getX()-j.pos.getX()-.5,player.getZ()-j.pos.getZ()-.5)<=.045){j.detail.addProperty("aligned",true);finish(true,null);return;}
         if(player.getHealth()<=8||player.isOnFire()||player.position().distanceTo(j.originPosition)>1.2)throw new IllegalStateException("alignment interrupted by danger or movement budget");
         player.lookAt(EntityAnchorArgument.Anchor.EYES,new Vec3(j.pos.getX()+.5,player.getEyeY(),j.pos.getZ()+.5));j.next=now+50;
     }
-    private void beginLadderAssist(Job j,LocalPlayer player,JsonObject p){
+    private void beginLadderAssist(OperationJob j,LocalPlayer player,JsonObject p){
         if(player.isDeadOrDying()||player.isSleeping()||player.isCreative()||player.isSpectator())throw new IllegalStateException("survival player unavailable");
         if(player.isInWater()||player.isInLava()||player.isPassenger())throw new IllegalStateException("ladder assist requires dry ground");
         int targetY=integer(p,"y",player.blockPosition().getY());
@@ -880,7 +880,7 @@ final class SurvivalActions {
         if(best==null)throw new IllegalStateException("no ladder within 3.5 blocks");
         j.pos=best;j.originPosition=player.position();j.stage=0;j.next=j.started;j.deadline=j.started+4000;
         j.detail.addProperty("ladder",best.getX()+","+best.getY()+","+best.getZ());j.detail.addProperty("start_y",player.getY());
-        player.connection.sendChat("#stop");pathFeedback.end();navigationTarget=null;
+        stopBaritone(player);pathFeedback.end();navigationTarget=null;
         Minecraft.getInstance().options.keyUp.setDown(false);Minecraft.getInstance().options.keyJump.setDown(false);player.input.jumping=false;
         aimAtLadder(player,best);
     }
@@ -891,7 +891,7 @@ final class SurvivalActions {
         if(Math.hypot(dx,dz)<.3){float yaw=facing.getOpposite().toYRot();player.setYRot(yaw);player.setYHeadRot(yaw);player.setXRot(0f);}
         else player.lookAt(EntityAnchorArgument.Anchor.EYES,new Vec3(ladder.getX()+.5,player.getEyeY(),ladder.getZ()+.5));
     }
-    private void tickLadderAssist(Job j,LocalPlayer player,long now){
+    private void tickLadderAssist(OperationJob j,LocalPlayer player,long now){
         if(j.detail.has("entered")&&j.detail.get("entered").getAsBoolean()){j.detail.addProperty("end_y",player.getY());finish(true,null);return;}
         if(player.getHealth()<=8||player.isOnFire()||player.isInWater()||player.isInLava()||player.isPassenger())throw new IllegalStateException("ladder assist interrupted by danger");
         if(player.position().distanceTo(j.originPosition)>4.0)throw new IllegalStateException("ladder assist moved too far");
@@ -903,14 +903,14 @@ final class SurvivalActions {
         if(now>j.deadline)throw new IllegalStateException("ladder entry was not confirmed");
         if(now>=j.next){aimAtLadder(player,j.pos);Minecraft.getInstance().options.keyUp.setDown(true);Minecraft.getInstance().options.keyJump.setDown(true);player.input.jumping=true;j.next=now+100;}
     }
-    private void tickPickup(Job j,LocalPlayer player,long now) {
+    private void tickPickup(OperationJob j,LocalPlayer player,long now) {
         int gained=count(player,j.item)-j.baseline;
         if(gained>0){j.detail.addProperty("produced",gained);j.detail.addProperty("collected",true);finish(true,null);return;}
         if(!j.drop.isAlive()||player.position().distanceTo(j.originPosition)>.6||now-j.started>1200)throw new IllegalStateException("PICKUP_NO_GAIN: no inventory increase after bounded normal movement");
         if(player.getHealth()<=8||player.isOnFire())throw new IllegalStateException("unsafe player state during pickup");
         j.next=now+50;
     }
-    private void beginSmelt(Job j,LocalPlayer player,JsonObject p) {
+    private void beginSmelt(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.pos=position(p);j.item=SurvivalRules.itemId(text(p,"item",""));
         j.count=SurvivalRules.checkedCount(integer(p,"count",1));if(j.count>8)throw new IllegalArgumentException("smelting is limited to 8 outputs per batch");
         j.collectOnly=p.has("collect_only")&&p.get("collect_only").getAsBoolean();
@@ -927,7 +927,7 @@ final class SurvivalActions {
         if(!player.containerMenu.getCarried().isEmpty())click(player,from.index,0,ClickType.PICKUP);
         if(!player.containerMenu.getCarried().isEmpty())throw new IllegalStateException("transfer cursor unexpectedly nonempty; stop and inspect");
     }
-    private void tickSmelt(Job j,LocalPlayer player,long now) {
+    private void tickSmelt(OperationJob j,LocalPlayer player,long now) {
         if(!(player.containerMenu instanceof FurnaceMenu menu)) {
             if(j.stage>0||now>j.started+5000)throw new IllegalStateException("furnace menu unavailable or changed; inserted materials stay in your furnace");
             j.next=now+200;return;
@@ -986,7 +986,7 @@ final class SurvivalActions {
             j.detail.addProperty("produced",gain);j.detail.addProperty("collected",true);finish(true,null);
         }
     }
-    private void beginSleep(Job j,LocalPlayer player,JsonObject p) {
+    private void beginSleep(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);
         if(player.level().dimension()!=Level.OVERWORLD||!player.level().dimensionType().bedWorks())throw new IllegalStateException("只允许在主世界睡觉，禁止在会爆炸的维度使用床");
         if(!SurvivalRules.night(player.level().getDayTime())&&!player.level().isThundering())throw new IllegalStateException("现在不是可睡觉的时间");
@@ -1021,7 +1021,7 @@ final class SurvivalActions {
         return hit;
     }
 
-    private void beginMine(Job j,LocalPlayer player,JsonObject p) {
+    private void beginMine(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.pos=position(p);String resource=text(p,"resource","");
         if(j.recoverStation&&!BuiltInRegistries.BLOCK.getKey(player.level().getBlockState(j.pos).getBlock()).toString().equals(j.item))throw new IllegalStateException("owned station changed before recovery; refusing to mine replacement block");
         if(Minecraft.getInstance().screen!=null)throw new IllegalStateException("close the current screen before mining");
@@ -1038,7 +1038,7 @@ final class SurvivalActions {
         select(player,hotbar(player,best));j.stage=0;j.next=j.started+700;
         j.detail.add("position",xyz(j.pos));j.detail.addProperty("resource",resource);
     }
-    private void tickMine(Job j,LocalPlayer player,long now) {
+    private void tickMine(OperationJob j,LocalPlayer player,long now) {
         BlockState current=player.level().getBlockState(j.pos);
         if(!current.equals(j.oldBlock)) {
             if(!current.isAir()&&!j.kind.equals("mine_at"))throw new IllegalStateException("target block changed unexpectedly");
@@ -1061,7 +1061,7 @@ final class SurvivalActions {
         }
     }
 
-    private void beginMineAt(Job j,LocalPlayer player,JsonObject p) {
+    private void beginMineAt(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.pos=position(p);
         if(Minecraft.getInstance().screen!=null)throw new IllegalStateException("close the current screen before mining");
         Level level=player.level();
@@ -1098,7 +1098,7 @@ final class SurvivalActions {
         return new BlockHitResult(point,face,support,false);
     }
 
-    private void beginPlaceAt(Job j,LocalPlayer player,JsonObject p) {
+    private void beginPlaceAt(OperationJob j,LocalPlayer player,JsonObject p) {
         normalInventory(player);j.pos=position(p);j.item=SurvivalRules.itemId(text(p,"item",""));
         if(j.item.isEmpty())throw new IllegalArgumentException("item is required");
         int source=find(player,j.item);if(source<0)throw new IllegalStateException("item is not in inventory: "+j.item);
@@ -1133,7 +1133,7 @@ final class SurvivalActions {
         j.next=j.started+300;j.deadline=j.started+3000;
     }
 
-    private void tickPlaceAt(Job j,LocalPlayer player,long now) {
+    private void tickPlaceAt(OperationJob j,LocalPlayer player,long now) {
         String expected=j.detail.has("block")?j.detail.get("block").getAsString():"";
         BlockState current=player.level().getBlockState(j.pos);
         if(!expected.isEmpty()&&blockId(current).equals(expected)){j.detail.addProperty("placed",true);finish(true,null);return;}
@@ -1487,14 +1487,14 @@ final class SurvivalActions {
         result.addProperty("sleeping",false);result.addProperty("awake",true);return result;
     }
 
-    private void beginDismount(Job j,LocalPlayer player) {
+    private void beginDismount(OperationJob j,LocalPlayer player) {
         if(!player.isPassenger())throw new IllegalStateException("player is not riding anything");
         player.input.shiftKeyDown=true;
         player.connection.send(new ServerboundPlayerInputPacket(0,0,false,true));
         j.stage=0;j.deadline=j.started+1600;j.next=j.started;
     }
 
-    private void tickDismount(Job j,LocalPlayer player,long now) {
+    private void tickDismount(OperationJob j,LocalPlayer player,long now) {
         if(!player.isPassenger()){player.input.shiftKeyDown=false;j.detail.addProperty("dismounted",true);finish(true,null);return;}
         if(now>j.deadline){player.input.shiftKeyDown=false;throw new IllegalStateException("dismount was not confirmed");}
         player.input.shiftKeyDown=true;

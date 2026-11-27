@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.8.0
+
+- **Phase 3：Mod `1.0.0` 重构与 Protocol 4 事件推送化**：
+  - **Protocol 4**：
+    - `hello.capabilities` 升级为 JSON 数组，并新增 `operation_events` 能力；Python 侧通过 `parse_capabilities()` 同时兼容 Protocol 4 数组与 Protocol 3 逗号字符串。
+    - 客户端 `SurvivalActions` 在长动作阶段变化和终态时主动推送 `operation_progress` / `operation_done` 事件；Python 侧 `BridgeServer.wait_operation()` 零延迟唤醒 Future，旧 Mod 自动退回 0.3s 轮询。
+  - **Java Mod 健壮性与配置化（`1.0.0`）**：
+    - 独立拆出 `OperationJob.java`，承载动作状态与阶段快照。
+    - 将硬编码的 `HUNTABLE` 迁入 `BridgeConfig.HUNTABLE_ENTITIES`（`huntableEntities`），任何整合包均可在配置文件中扩展猎物白名单。
+    - `SafeNavigation.cancelBaritone()` 优先通过 Baritone API 反射取消路径，避免 `sendChat("#stop")` 泄漏到多人服公屏。
+    - 握手 `version` 自动读取 Mod 元数据，清理 `survival-20261101` 调试残留，下行 WS 帧上限由 64KB 放宽至 512KB。
+
 ## 1.7.0
 
 - **Phase 2 模块化重构（行为零变更）**：

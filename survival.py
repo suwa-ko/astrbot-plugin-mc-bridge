@@ -22,6 +22,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .mc_bridge.server import parse_capabilities
 from .privacy import redact_text
 from .reply_route import ReplyRoute
 
@@ -165,8 +166,8 @@ class SurvivalSupervisor:
 
     def _poll_interval(self) -> float:
         base = _int(self._cfg("auto_survive_interval", 2), 2, 1, 10)
-        capabilities = str(getattr(self.plugin.bridge, "client_info", {}).get("capabilities", ""))
-        if "survival_events" in {x.strip() for x in capabilities.split(",")}:
+        capabilities = parse_capabilities(getattr(self.plugin.bridge, "client_info", {}).get("capabilities"))
+        if "survival_events" in capabilities:
             return float(max(5, base * 2))
         return float(base)
 

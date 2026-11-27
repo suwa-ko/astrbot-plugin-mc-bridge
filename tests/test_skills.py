@@ -747,6 +747,26 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["arrived"])
         self.assertEqual(plugin.moves, [(5, 64, 0, 30)])
 
+    async def test_return_to_chunks_targets_beyond_32_blocks(self):
+        class FarPlugin(FakePlugin):
+            def __init__(self):
+                super().__init__()
+                self.position = {"x": 0.0, "y": 93.0, "z": 0.0}
+
+            async def _approach_target(self, x, y, z, seconds=20, reach=4.0, allow_break=False):
+                dist = ((x - self.position["x"]) ** 2 + (z - self.position["z"]) ** 2) ** 0.5
+                if dist > 32.0:
+                    return "safe navigation is limited to 32 blocks, 12 vertically"
+                self.approaches.append((x, y, z))
+                self.position = {"x": float(x), "y": float(y), "z": float(z)}
+                return None
+
+        plugin = FarPlugin()
+        result = await skills_mod.VanillaSkills(plugin).return_to([60, 94, 0], reach=2)
+        self.assertTrue(result["arrived"])
+        self.assertGreaterEqual(len(plugin.approaches), 2)
+        self.assertEqual(plugin.approaches[-1], (60, 94, 0))
+
     async def test_place_line_requires_material_and_places_requested_count(self):
         plugin = FakePlugin()
         plugin.inventory = [{"id": "minecraft:cobblestone", "count": 4, "slot": 20}]

@@ -549,6 +549,65 @@ class SkillsBaseMixin:
                     break
         return {"skill": "place_line", "placed": placed, "requested": length, "material": material, "errors": errors}
 
+    async def _step_toward_far_target(self, tx: int, ty: int, tz: int, max_hops: int = 16) -> None:
+        """Advance in <=24-block hops when the target exceeds the 32-block navigate cap."""
+        resolver = getattr(self.plugin, "_resolve_navigation_target", None)
+        mover = getattr(self.plugin, "_move_and_wait", None)
+        last_err = ""
+        for _ in range(max_hops):
+            cur = self._coords(await self.status())
+            if cur is None:
+                return
+            dx, dy, dz = tx - cur[0], ty - cur[1], tz - cur[2]
+            horiz = math.hypot(dx, dz)
+            if horiz <= 28.0 and abs(dy) <= 10.0:
+                return
+            scale = min(1.0, 24.0 / horiz) if horiz > 24.0 else 1.0
+            step_y = max(-8.0, min(8.0, dy))
+            raw_wx = int(round(cur[0] + dx * scale))
+            raw_wy = int(round(cur[1] + step_y))
+            raw_wz = int(round(cur[2] + dz * scale))
+            wx, wy, wz = raw_wx, raw_wy, raw_wz
+            if callable(resolver):
+                try:
+                    resolved, _info = await resolver(raw_wx, raw_wy, raw_wz)
+                    if resolved is not None:
+                        wx, wy, wz = resolved
+                except Exception:
+                    pass
+            hop_ok = False
+            if callable(mover):
+                try:
+                    await mover(wx, wy, wz, 30)
+                    hop_ok = True
+                except Exception:
+                    pass
+            if not hop_ok:
+                err = await self.plugin._approach_target(wx, wy, wz, seconds=30, reach=2.5)
+                if err:
+                    last_err = err
+                    err2 = await self.plugin._approach_target(
+                        wx, wy, wz, seconds=30, reach=2.5, allow_break=True,
+                    )
+                    if err2:
+                        last_err = err2
+            after = self._coords(await self.status())
+            if after is not None and math.dist(cur, (tx, ty, tz)) - math.dist(after, (tx, ty, tz)) >= 2.0:
+                continue
+            if (wx, wy, wz) != (raw_wx, raw_wy, raw_wz):
+                err3 = await self.plugin._approach_target(
+                    raw_wx, raw_wy, raw_wz, seconds=30, reach=2.5, allow_break=True,
+                )
+                if err3:
+                    last_err = err3
+                after = self._coords(await self.status())
+                if after is not None and math.dist(cur, (tx, ty, tz)) - math.dist(after, (tx, ty, tz)) >= 2.0:
+                    continue
+            raise SkillError("分段返回受阻：" + (last_err or "无法继续靠近目标"))
+        cur = self._coords(await self.status())
+        if cur is not None and (math.hypot(tx - cur[0], tz - cur[2]) > 28.0 or abs(ty - cur[1]) > 10.0):
+            raise SkillError("分段返回步数耗尽，仍未接近目标")
+
     async def return_to(self, target_pos, reach=2.0):
         x, y, z = _position(target_pos)
         reach = max(0.5, min(8.0, float(reach)))
@@ -576,6 +635,7 @@ class SkillsBaseMixin:
             )
             if distance <= reach + 0.75:
                 return {"skill": "return_to", "target": {"x": x, "y": y, "z": z}, "distance": distance, "arrived": True}
+        await self._step_toward_far_target(x, y, z)
         error = await self.plugin._approach_target(x, y, z, seconds=30, reach=reach)
         if error:
             raise SkillError("返回目标失败：" + error)

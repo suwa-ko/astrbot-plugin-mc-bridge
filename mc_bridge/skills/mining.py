@@ -986,12 +986,13 @@ class MiningAndNavMixin:
             except SkillError as exc:
                 tunnel_error = exc
 
-        # 4) Direct and short-tunnel routes failed.  If the bed is above us,
-        # climb a staircase to the bed's level; do not trust sky_visible, because
-        # an open shaft can see the sky while still being deep underground.
-        if above > 2:
+        # 4) Direct and short-tunnel routes failed.  If the bed is above us or
+        # we are trapped inside terrain (sky not visible), climb out before
+        # walking to the bed.
+        if above > 2 or status.get("sky_visible", True) is False:
             try:
-                await self._ascend_to_surface(min_y=int(round(target_point[1])))
+                climb_target = int(round(target_point[1])) if above > 2 else None
+                await self._ascend_to_surface(min_y=climb_target)
                 ascended = True
                 result = await self.return_to(target, reach=reach)
                 result["skill"] = "return_home"

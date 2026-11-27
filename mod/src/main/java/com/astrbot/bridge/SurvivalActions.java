@@ -116,7 +116,7 @@ final class SurvivalActions {
     }
     private void stopBaritone(LocalPlayer player) {
         if (!navigation.cancelBaritone() && player != null && player.connection != null) {
-            stopBaritone(player);
+            player.connection.sendChat("#stop");
         }
     }
     static boolean handles(String action) {

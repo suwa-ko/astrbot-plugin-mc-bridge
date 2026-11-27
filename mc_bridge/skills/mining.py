@@ -410,7 +410,7 @@ class MiningAndNavMixin:
         last_result = None
         last_error = None
         collect_radius = max(int(radius), 16)
-        for _ in range(16):
+        for _ in range(24):
             gained = self.item_count(await self.status(), resource) - baseline
             if gained >= target:
                 res = dict(last_result or {})
@@ -423,6 +423,7 @@ class MiningAndNavMixin:
                 break
             await self._auto_eat_if_needed()
             remaining = int(max(20, min(180, deadline - time.monotonic())))
+            before_round = self.item_count(await self.status(), resource)
             try:
                 step_res = await self.gather(
                     resource, max(1, target - gained), radius=collect_radius,
@@ -437,8 +438,12 @@ class MiningAndNavMixin:
                     return res
             except SkillError as exc:
                 last_error = exc
-                if not any(w in str(exc) for w in ("没有可采集", "不可采集", "掉落物")):
+                msg = str(exc)
+                if not any(w in msg for w in ("没有可采集", "不可采集", "掉落物", "超时")):
                     break
+                if "超时" in msg and (self.item_count(await self.status(), resource) - before_round) > 0:
+                    # Per-window gather timeout hit while actively collecting; continue immediately.
+                    continue
             if time.monotonic() + 25 >= deadline:
                 break
             moved = False
@@ -698,6 +703,29 @@ class MiningAndNavMixin:
             }
         return None
 
+    async def _clear_ascend_cell(self, cx: int, cy: int, cz: int) -> bool:
+        """Clear one staircase cell (with brief retry for falling sand/gravel), rejecting fluids."""
+        for _ in range(3):
+            try:
+                ctx = await self._call("block_context", {"x": cx, "y": cy, "z": cz}, timeout=8)
+            except Exception:
+                ctx = {}
+            blk = str(ctx.get("block") or "")
+            if "water" in blk or "lava" in blk or ctx.get("fluid"):
+                return False
+            if blk and any(w in blk for w in ("chest", "barrel", "furnace", "hopper", "bed")):
+                return False
+            if blk.endswith("air"):
+                return True
+            try:
+                await self._run("mine_at", {"x": cx, "y": cy, "z": cz}, seconds=8)
+            except SkillError:
+                return True
+            if not any(w in blk for w in ("gravel", "sand")):
+                return True
+            await asyncio.sleep(0.35)
+        return True
+
     async def _ascend_to_surface(self, min_y=None, max_steps=192):
         """Climb out by mining a one-block-up staircase, then stepping onto it.
 
@@ -710,6 +738,7 @@ class MiningAndNavMixin:
         min_y = None if min_y is None else int(min_y)
         directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
         last_error = None
+        side_escapes = 0
         for step in range(max_steps):
             status = await self.status()
             current = self._coords(status)
@@ -772,26 +801,14 @@ class MiningAndNavMixin:
                 ):
                     continue
                 # A 1x2 step has a solid ceiling directly above the player.
-                # Clear it first, otherwise Baritone cannot jump onto the step.
-                try:
-                    await self._run(
-                        "mine_at",
-                        {"x": x, "y": y + 2, "z": z},
-                        seconds=8,
-                    )
-                except SkillError as exc:
-                    pass
-                for dy in (1, 2):
-                    try:
-                        await self._run(
-                            "mine_at",
-                            {"x": tx, "y": y + dy, "z": tz},
-                            seconds=8,
-                        )
-                    except SkillError as exc:
-                        # Air is fine; a protected block will make the move
-                        # fail and the next direction will be tried.
-                        pass
+                # Clear it first (and skip if fluid sits overhead/ahead).
+                if not await self._clear_ascend_cell(x, y + 2, z):
+                    continue
+                if not (
+                    await self._clear_ascend_cell(tx, y + 1, tz)
+                    and await self._clear_ascend_cell(tx, y + 2, tz)
+                ):
+                    continue
                 error = await self.plugin._approach_target(
                     tx, ty, tz, seconds=12, reach=1.2, allow_break=False,
                 )
@@ -803,6 +820,13 @@ class MiningAndNavMixin:
                 if error:
                     step_errors.append(error)
                     last_error = error
+            if not moved and side_escapes < 6:
+                for offset in range(4):
+                    dx, dz = directions[(step + offset) % 4]
+                    if await self._step_horizontal_tunnel(dx, dz, steps=3):
+                        side_escapes += 1
+                        moved = True
+                        break
             if not moved:
                 detail = f"：{last_error}" if last_error else ""
                 raise SkillError("向上挖掘没有进展" + detail)

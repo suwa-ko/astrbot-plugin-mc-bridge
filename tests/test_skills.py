@@ -579,6 +579,77 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["collected"], 4)
         self.assertGreaterEqual(plugin.position["x"], 6.0)
 
+    async def test_gather_deep_branches_continues_after_window_timeout(self):
+        class WindowPlugin(FakePlugin):
+            def __init__(self):
+                super().__init__()
+                self.position = {"x": 0.5, "y": -54.0, "z": 0.5}
+                self.diamonds = 0
+                self.pickaxe = {
+                    "id": "minecraft:iron_pickaxe", "count": 1, "slot": 0,
+                    "damage": 0, "max_damage": 250,
+                }
+
+            async def _call(self, action, params=None, timeout=10):
+                if action == "status":
+                    data = await super()._call(action, params, timeout)
+                    data["position"] = dict(self.position)
+                    data["inventory_items"] = [dict(self.pickaxe)] + (
+                        [{"id": "minecraft:diamond", "count": self.diamonds, "slot": 5}]
+                        if self.diamonds else []
+                    )
+                    return data
+                return await super()._call(action, params, timeout)
+
+        plugin = WindowPlugin()
+        skills = skills_mod.VanillaSkills(plugin)
+        rounds = {"count": 0}
+
+        async def fake_gather(resource, count, radius=12, max_seconds=180, allow_night=False):
+            rounds["count"] += 1
+            if rounds["count"] == 1:
+                plugin.diamonds += 24
+                raise skills_mod.SkillError("采集超时，已获得 24/32")
+            plugin.diamonds += 8
+            return {"skill": "gather", "resource": resource, "requested": count, "collected": 8}
+
+        skills.gather = fake_gather
+        res = await skills._gather_deep_branches("diamond", 32, 16, time.monotonic() + 300, False, 0)
+        self.assertEqual(rounds["count"], 2)
+        self.assertEqual(res["collected"], 32)
+
+    async def test_ascend_to_surface_side_escapes_blocked_column(self):
+        class BlockedOverhead(FakePlugin):
+            def __init__(self):
+                super().__init__()
+                self.position = {"x": 0.5, "y": 15.0, "z": 0.5}
+                self.sky_visible = False
+
+            async def _call(self, action, params=None, timeout=10):
+                data = await super()._call(action, params, timeout)
+                if action == "status":
+                    data["sky_visible"] = self.sky_visible
+                    return data
+                if action == "block_context":
+                    bx, by = int(params.get("x", 0)), int(params.get("y", 0))
+                    if bx == 0 and by == 17:
+                        return {"block": "minecraft:water", "fluid": True}
+                    return {"block": "minecraft:stone", "standable": False}
+                return data
+
+            async def _approach_target(self, x, y, z, seconds=20, reach=4.0, allow_break=False):
+                self.approaches.append((x, y, z, allow_break))
+                self.position = {"x": float(x) + 0.5, "y": float(y), "z": float(z) + 0.5}
+                if y >= 18:
+                    self.sky_visible = True
+                return None
+
+        plugin = BlockedOverhead()
+        skills = skills_mod.VanillaSkills(plugin)
+        self.assertTrue(await skills._ascend_to_surface())
+        self.assertTrue(any(ax >= 3 for ax, _ay, _az, _ab in plugin.approaches))
+        self.assertGreaterEqual(plugin.position["y"], 18.0)
+
     async def test_smelt_without_furnace_attempts_crafting(self):
         skills = skills_mod.VanillaSkills(FakePlugin())
         with self.assertRaises(skills_mod.SkillError):

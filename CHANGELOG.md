@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0
+
+- **Phase 5：工具面收敛与 MCP Server 平台化**：
+  - 新增 `tool_profile=compact` 精简工具面（收敛至 14 个核心高内聚工具），与既有 `simple`（29 个）与 `full`（78 个）完全兼容。
+  - 新增 [mc_bridge/mcp_server.py](mc_bridge/mcp_server.py)（`McBridgeMcpAdapter` + `build_fastmcp_server()` + `python -m mc_bridge.mcp_server` CLI）：
+    - 暴露 5 个脱敏只读 **MCP Resources**（`mc://status`、`mc://inventory`、`mc://memory/places`、`mc://tasks/active`、`mc://coach/playbook`）。
+    - 暴露 12 个收敛后的核心 **MCP Tools**（支持 `stdio` 与 `streamable-http`）。
+  - 新增 [docs/mcp.md](docs/mcp.md) 使用文档与 [tests/test_mcp_server.py](tests/test_mcp_server.py) 回归测试。
+
 ## 1.9.0
 
 - **Phase 4：Coach 离线教练反馈学习系统（`mc_bridge/coach/`）**：

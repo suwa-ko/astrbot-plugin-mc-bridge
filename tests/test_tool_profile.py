@@ -31,6 +31,21 @@ class ToolProfileTests(unittest.TestCase):
         plugin._apply_tool_profile()
         self.assertEqual(len(manager.func_list), 2)
 
+    def test_compact_profile_converges_to_core_tools(self):
+        plugin = make_plugin()
+        names = ["mc_brief", "mc_plan", "mc_task_start", "mc_goto", "mc_dig_down", "mc_mine_at", "mc_set_respawn", "mc_memory"]
+        manager = SimpleNamespace(
+            func_list=[SimpleNamespace(name=name) for name in names],
+            remove_func=lambda name: manager.func_list.__setitem__(
+                slice(None), [tool for tool in manager.func_list if tool.name != name]
+            ),
+        )
+        plugin.context = SimpleNamespace(get_llm_tool_manager=lambda: manager)
+        plugin.config["tool_profile"] = "compact"
+        plugin._apply_tool_profile()
+        remaining = {tool.name for tool in manager.func_list}
+        self.assertEqual(remaining, {"mc_brief", "mc_plan", "mc_task_start", "mc_goto", "mc_memory"})
+
 
 if __name__ == "__main__":
     unittest.main()

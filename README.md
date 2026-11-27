@@ -135,7 +135,8 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 
 | 插件 | Mod | 协议 |
 |---|---|---|
-| 1.8.x | 1.0.x | 4（兼容 3） |
+| 2.0.x | 1.0.x | 4（兼容 3） |
+| 1.8.x–1.9.x | 1.0.x | 4（兼容 3） |
 | 1.6.x | 0.9.x | 3 |
 | 1.5.x | 0.8.x | 3 |
 | 1.4.x | 0.7.x | 3 |
@@ -159,6 +160,7 @@ mc <自然语言>  交给 Minecraft 助手规划和执行
 
 - [命令与工具](docs/commands.md)
 - [架构说明](docs/architecture.md)
+- [MCP Server 模式](docs/mcp.md)
 - [开发与发布](docs/development.md)
 - [连接协议](protocol.md)
 - [更新日志](CHANGELOG.md)

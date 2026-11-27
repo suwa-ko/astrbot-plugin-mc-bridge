@@ -46,7 +46,7 @@ from astrbot.core.agent.message import TextPart
 from .shared_memory import McSharedMemory, MARKER
 from .core import ActionError, SurvivalError
 
-from .chat_policy import bound_history, history_budget, estimate_tokens, memory_needed, is_memory_question, tool_group, action_intent, is_confirmation, READONLY, SURVIVAL as SURVIVAL_TOOL_NAMES, SIMPLE as SIMPLE_TOOLS
+from .chat_policy import bound_history, history_budget, estimate_tokens, memory_needed, is_memory_question, tool_group, action_intent, is_confirmation, READONLY, SURVIVAL as SURVIVAL_TOOL_NAMES, SIMPLE as SIMPLE_TOOLS, COMPACT as COMPACT_TOOLS
 from .telemetry import Telemetry, Trace, ToolHooks, CURRENT_TRACE, observed_context
 from .scheduler import UnifiedScheduler, Priority, TaskState, ScheduledTask
 from .skills import VanillaSkills, SkillError, parse_transfer_items, HUNTABLE, HUNT_ALIASES
@@ -613,16 +613,21 @@ class McBridgePlugin(RuntimeMixin, Star):
         return ""
 
     def _tool_profile(self) -> str:
-        return "full" if str(self.config.get("tool_profile", "simple")).strip().lower() == "full" else "simple"
+        raw = str(self.config.get("tool_profile", "simple")).strip().lower()
+        if raw in {"compact", "simple", "full"}:
+            return raw
+        return "simple"
 
     def _apply_tool_profile(self) -> None:
-        if self._tool_profile() == "full":
+        profile = self._tool_profile()
+        if profile == "full":
             return
+        allowed = COMPACT_TOOLS if profile == "compact" else SIMPLE_TOOLS
         try:
             manager = self.context.get_llm_tool_manager()
             for tool in list(getattr(manager, "func_list", [])):
                 name = str(getattr(tool, "name", "") or "")
-                if name.startswith("mc_") and name not in SIMPLE_TOOLS:
+                if name.startswith("mc_") and name not in allowed:
                     manager.remove_func(name)
         except Exception as exc:
             logger.warning("[mc-bridge] tool profile filter skipped: %s", type(exc).__name__)
@@ -1316,7 +1321,7 @@ class McBridgePlugin(RuntimeMixin, Star):
                 trace.data['phases']['memory_seconds']=round(time.monotonic()-start,6)
                 trace.data['context']['memory_chars']=sum(len(p.text) for p in memory_parts)
                 persona=self._persona_prompt()
-                if self._tool_profile() == "simple":
+                if self._tool_profile() in {"simple", "compact"}:
                     system_prompt = persona + self._simple_system_prompt(allow_actions, owner)
                 else:
                     system_prompt=persona+(

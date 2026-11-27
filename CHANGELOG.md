@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1
+
+- **实机验收热修（Mod `1.0.1` + Plugin `2.0.1`）**：
+  - 修复 Java Mod `SurvivalActions.stopBaritone()` 兜底分支误写递归调用导致在 Baritone 混淆环境下触发 `StackOverflowError` 的问题。
+  - 修复 `CoachStore.retrieve_lessons(scope="")` 仅查 `global` 导致具体任务 scope 的生效经验无法注入通用对话轮次的问题，打通注入后胜率统计闭环。
+  - 修复 `mc_plan` 汇总未将单步 `goal_outcome="unmet"` 计入降级的问题（含 `unmet` 步骤时计划整体正确降级为 `partial` 或 `unmet`）。
+
 ## 2.0.0
 
 - **Phase 5：工具面收敛与 MCP Server 平台化**：

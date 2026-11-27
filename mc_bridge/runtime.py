@@ -1277,6 +1277,7 @@ class RuntimeMixin:
         results = []
         completed_count = 0
         partial_count = 0
+        unmet_count = 0
         failed = 0
         for index, step in enumerate(steps):
             opcode = str(step.get("opcode") or "").strip()
@@ -1309,6 +1310,8 @@ class RuntimeMixin:
                 completed_count += 1
                 if step_outcome == "partial":
                     partial_count += 1
+                elif step_outcome == "unmet":
+                    unmet_count += 1
                 item.checkpoint = {"plan": {"next": index + 1, "results": results[-4:]}}
             except asyncio.CancelledError:
                 item.checkpoint = {"plan": {"next": index, "results": results[-4:]}}
@@ -1320,15 +1323,17 @@ class RuntimeMixin:
                 item.checkpoint = {"plan": {"next": index + (1 if keep_going else 0), "results": results[-4:]}}
                 if not keep_going:
                     break
+        degraded = partial_count + unmet_count
         outcome = (
-            "fulfilled" if failed == 0 and partial_count == 0
-            else ("partial" if completed_count else "unmet")
+            "fulfilled" if failed == 0 and degraded == 0
+            else ("partial" if (completed_count - unmet_count) > 0 else "unmet")
         )
         summary = {
             "skill": "plan",
             "goal_outcome": outcome,
             "completed": completed_count,
-            "partial_steps": partial_count,
+            "partial_steps": degraded,
+            "unmet_steps": unmet_count,
             "total": len(steps),
             "failed": failed,
             "steps": results[-8:],

@@ -61,6 +61,9 @@ class CoachTests(unittest.IsolatedAsyncioTestCase):
                 prompt_block, ids = engine.format_playbook_prompt("smelt")
                 self.assertEqual(ids, [lid])
                 self.assertIn("历史经验参考", prompt_block)
+                # Empty scope should also retrieve active task-specific lessons for general agent turns
+                _, global_ids = engine.format_playbook_prompt("")
+                self.assertEqual(global_ids, [lid])
                 for _ in range(6):
                     retired = store.record_lesson_outcome([lid], fulfilled=False)
                     self.assertEqual(retired, [])

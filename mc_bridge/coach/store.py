@@ -195,22 +195,25 @@ class CoachStore:
         return [dict(r) for r in rows]
 
     def retrieve_lessons(self, scope: str = "", *, limit: int = 3, include_global: bool = True) -> list[dict[str, Any]]:
-        """Retrieve Top-K active lessons ranked by smoothed win rate + confidence."""
+        """Retrieve Top-K active lessons ranked by smoothed win rate + confidence.
+
+        When ``scope`` is empty, retrieves across all active scopes so owner-taught
+        or task-specific lessons are eligible for general agent turns.
+        """
         limit = max(1, min(5, int(limit)))
-        scopes = []
         clean_scope = str(scope or "").strip().lower()
-        if clean_scope:
-            scopes.append(clean_scope)
-        if include_global and "global" not in scopes:
-            scopes.append("global")
-        if not scopes:
-            scopes = ["global"]
-        placeholders = ",".join("?" for _ in scopes)
         with self.lock:
-            rows = self.db.execute(
-                f"SELECT * FROM lessons WHERE status = 'active' AND scope IN ({placeholders})",
-                scopes,
-            ).fetchall()
+            if not clean_scope:
+                rows = self.db.execute("SELECT * FROM lessons WHERE status = 'active'").fetchall()
+            else:
+                scopes = [clean_scope]
+                if include_global and "global" not in scopes:
+                    scopes.append("global")
+                placeholders = ",".join("?" for _ in scopes)
+                rows = self.db.execute(
+                    f"SELECT * FROM lessons WHERE status = 'active' AND scope IN ({placeholders})",
+                    scopes,
+                ).fetchall()
         scored = []
         for r in rows:
             d = dict(r)
